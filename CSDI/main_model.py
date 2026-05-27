@@ -57,7 +57,9 @@ class CSDI_base(nn.Module):
         )
 
     def get_device(self):
-        return next(self.parameters()).device
+        # DataParallel replicas may not expose parameters through parameters().
+        # Registered buffers are replicated to the active device reliably.
+        return self.alpha_torch.device
 
     def time_embedding(self, pos, d_model=128):
         device = pos.device
