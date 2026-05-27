@@ -51,13 +51,20 @@ class CSDI_base(nn.Module):
 
         self.alpha_hat = 1 - self.beta
         self.alpha = np.cumprod(self.alpha_hat)
-        self.alpha_torch = torch.tensor(self.alpha).float().to(self.device).unsqueeze(1).unsqueeze(1)
+        self.register_buffer(
+            "alpha_torch",
+            torch.tensor(self.alpha).float().unsqueeze(1).unsqueeze(1),
+        )
+
+    def get_device(self):
+        return next(self.parameters()).device
 
     def time_embedding(self, pos, d_model=128):
-        pe = torch.zeros(pos.shape[0], pos.shape[1], d_model).to(self.device)
+        device = pos.device
+        pe = torch.zeros(pos.shape[0], pos.shape[1], d_model).to(device)
         position = pos.unsqueeze(2)
         div_term = 1 / torch.pow(
-            10000.0, torch.arange(0, d_model, 2).to(self.device) / d_model
+            10000.0, torch.arange(0, d_model, 2).to(device) / d_model
         )
         pe[:, :, 0::2] = torch.sin(position * div_term)
         pe[:, :, 1::2] = torch.cos(position * div_term)
@@ -95,11 +102,12 @@ class CSDI_base(nn.Module):
 
     def get_side_info(self, observed_tp, cond_mask, duration=None):
         B, K, L = cond_mask.shape
+        device = cond_mask.device
 
         time_embed = self.time_embedding(observed_tp, self.emb_time_dim)  # (B,L,emb)
         time_embed = time_embed.unsqueeze(2).expand(-1, -1, K, -1)
         feature_embed = self.embed_layer(
-            torch.arange(self.target_dim).to(self.device)
+            torch.arange(self.target_dim).to(device)
         )  # (K,emb)
         feature_embed = feature_embed.unsqueeze(0).unsqueeze(0).expand(B, L, -1, -1)
 
@@ -109,7 +117,7 @@ class CSDI_base(nn.Module):
         if self.use_duration:
             if duration is None:
                 raise ValueError("duration is required when model.use_duration is true")
-            duration = duration.to(self.device).float().view(B, 1)
+            duration = duration.to(device).float().view(B, 1)
             duration_embed = self.duration_mlp(duration)
             duration_embed = duration_embed.unsqueeze(-1).unsqueeze(-1).expand(
                 -1, -1, K, L
@@ -190,7 +198,11 @@ class CSDI_base(nn.Module):
                     cond_obs = (cond_mask * observed_data).unsqueeze(1)
                     noisy_target = ((1 - cond_mask) * current_sample).unsqueeze(1)
                     diff_input = torch.cat([cond_obs, noisy_target], dim=1)  # (B,2,K,L)
-                predicted = self.diffmodel(diff_input, side_info, torch.tensor([t]).to(self.device))
+                predicted = self.diffmodel(
+                    diff_input,
+                    side_info,
+                    torch.tensor([t]).to(observed_data.device),
+                )
 
                 coeff1 = 1 / self.alpha_hat[t] ** 0.5
                 coeff2 = (1 - self.alpha_hat[t]) / (1 - self.alpha[t]) ** 0.5
@@ -459,15 +471,16 @@ class CSDI_Express4D(CSDI_base):
         self.clamp_max = float(dataset_config.get("clamp_max", 1.0))
 
     def process_data(self, batch):
-        observed_data = batch["observed_data"].to(self.device).float()
-        observed_mask = batch["observed_mask"].to(self.device).float()
-        observed_tp = batch["timepoints"].to(self.device).float()
+        device = self.get_device()
+        observed_data = batch["observed_data"].to(device).float()
+        observed_mask = batch["observed_mask"].to(device).float()
+        observed_tp = batch["timepoints"].to(device).float()
         target_mask = batch["target_mask"] if "target_mask" in batch else batch["gt_mask"]
-        target_mask = target_mask.to(self.device).float()
+        target_mask = target_mask.to(device).float()
         duration = batch.get("duration", batch.get("duraction"))
         if duration is None:
             raise KeyError("Express4D batch must contain duration")
-        duration = duration.to(self.device).float().view(-1)
+        duration = duration.to(device).float().view(-1)
 
         # Dataset returns [B,L,K]; CSDI diffusion blocks use [B,K,L].
         observed_data = observed_data.permute(0, 2, 1)
@@ -488,9 +501,9 @@ class CSDI_Express4D(CSDI_base):
     ):
         B, K, L = observed_data.shape
         if is_train != 1:
-            t = (torch.ones(B) * set_t).long().to(self.device)
+            t = (torch.ones(B) * set_t).long().to(observed_data.device)
         else:
-            t = torch.randint(0, self.num_steps, [B]).to(self.device)
+            t = torch.randint(0, self.num_steps, [B]).to(observed_data.device)
 
         current_alpha = self.alpha_torch[t]
         sqrt_alpha = current_alpha ** 0.5
@@ -564,30 +577,31 @@ class CSDI_Express4D(CSDI_base):
         return samples, observed_data, target_mask, cond_mask, observed_tp
 
     def generate_middle(self, start, end, duration, num_samples=1):
+        device = self.get_device()
         was_single = start.dim() == 1
         if was_single:
             start = start.unsqueeze(0)
             end = end.unsqueeze(0)
-        start = start.to(self.device).float()
-        end = end.to(self.device).float()
+        start = start.to(device).float()
+        end = end.to(device).float()
         B, K = start.shape
         if K != self.target_dim or end.shape != (B, K):
             raise ValueError(
                 f"start/end must have shape [52] or [B,52], got {tuple(start.shape)} and {tuple(end.shape)}"
             )
 
-        duration = torch.as_tensor(duration, device=self.device).float()
+        duration = torch.as_tensor(duration, device=device).float()
         if duration.dim() == 0:
             duration = duration.repeat(B)
         duration = duration.view(B)
 
-        observed_data = torch.zeros(B, K, self.seq_len, device=self.device)
+        observed_data = torch.zeros(B, K, self.seq_len, device=device)
         observed_data[:, :, 0] = start
         observed_data[:, :, -1] = end
         cond_mask = torch.zeros_like(observed_data)
         cond_mask[:, :, 0] = 1.0
         cond_mask[:, :, -1] = 1.0
-        observed_tp = torch.arange(self.seq_len, device=self.device).float().unsqueeze(0).expand(B, -1)
+        observed_tp = torch.arange(self.seq_len, device=device).float().unsqueeze(0).expand(B, -1)
 
         with torch.no_grad():
             side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)

@@ -2,6 +2,7 @@
 set -e
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_DEBUG=WARN
 
 python train_express4d.py \
   --config config/express4d.yaml \
