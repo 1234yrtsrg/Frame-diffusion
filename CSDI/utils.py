@@ -24,6 +24,9 @@ def train(
     )
 
     best_valid_loss = 1e10
+    global_step = 0
+    max_train_steps = config.get("max_train_steps", None)
+    save_interval_steps = config.get("save_interval_steps", None)
     for epoch_no in range(config["epochs"]):
         avg_loss = 0
         model.train()
@@ -35,17 +38,33 @@ def train(
                 loss.backward()
                 avg_loss += loss.item()
                 optimizer.step()
+                global_step += 1
+                if (
+                    foldername != ""
+                    and save_interval_steps is not None
+                    and global_step % save_interval_steps == 0
+                ):
+                    torch.save(
+                        model.state_dict(),
+                        foldername + "/checkpoint_step_" + str(global_step) + ".pth",
+                    )
                 it.set_postfix(
                     ordered_dict={
                         "avg_epoch_loss": avg_loss / batch_no,
                         "epoch": epoch_no,
+                        "global_step": global_step,
                     },
                     refresh=False,
                 )
                 if batch_no >= config["itr_per_epoch"]:
                     break
+                if max_train_steps is not None and global_step >= max_train_steps:
+                    break
 
             lr_scheduler.step()
+        if max_train_steps is not None and global_step >= max_train_steps:
+            print("\n max_train_steps reached:", global_step)
+            break
         if valid_loader is not None and (epoch_no + 1) % valid_epoch_interval == 0:
             model.eval()
             avg_loss_valid = 0

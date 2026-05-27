@@ -2,7 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from linear_attention_transformer import LinearAttentionTransformer
+try:
+    from linear_attention_transformer import LinearAttentionTransformer
+except ImportError:
+    LinearAttentionTransformer = None
 
 
 def get_torch_trans(heads=8, layers=1, channels=64):
@@ -12,6 +15,10 @@ def get_torch_trans(heads=8, layers=1, channels=64):
     return nn.TransformerEncoder(encoder_layer, num_layers=layers)
 
 def get_linear_trans(heads=8,layers=1,channels=64,localheads=0,localwindow=0):
+  if LinearAttentionTransformer is None:
+      raise ImportError(
+          "linear_attention_transformer is required when diffusion.is_linear is true"
+      )
 
   return LinearAttentionTransformer(
         dim = channels,

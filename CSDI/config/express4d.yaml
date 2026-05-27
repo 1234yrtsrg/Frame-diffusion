@@ -1,0 +1,51 @@
+dataset:
+  name: express4d
+  root: dataset/Express4D
+  data_dir: data
+  train_list: train.txt
+  test_list: test.txt
+  fps: 60
+  num_features: 52
+  seq_len: 12
+  num_middle: 10
+  gaps: [12, 24, 36, 60, 90, 120, 180, 240]
+  use_npy_first: true
+  clamp: true
+  clamp_min: 0.0
+  clamp_max: 1.0
+
+train:
+  epochs: 100
+  batch_size: 16
+  lr: 1.0e-3
+  itr_per_epoch: 1.0e+8
+  valid_epoch_interval: 20
+  num_workers: 0
+  save_interval_steps: 50000
+
+diffusion:
+  layers: 4
+  channels: 64
+  nheads: 8
+  diffusion_embedding_dim: 128
+  beta_start: 0.0001
+  beta_end: 0.5
+  num_steps: 50
+  schedule: "quad"
+  is_linear: false
+
+model:
+  is_unconditional: 0
+  timeemb: 128
+  featureemb: 16
+  target_strategy: "express4d"
+  num_features: 52
+  seq_len: 12
+  use_duration: true
+  duration_embed_dim: 128
+
+loss:
+  lambda_recon: 1.0
+  lambda_vel: 0.5
+  lambda_acc: 0.2
+  lambda_range: 0.1

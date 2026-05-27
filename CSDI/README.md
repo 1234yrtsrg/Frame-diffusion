@@ -40,6 +40,39 @@ python exe_pm25.py --nsample [number of samples]
 python exe_forecasting.py --datatype electricity --nsample [number of samples]
 ```
 
+### Express4D blendshape interpolation
+Express4D uses CSDI as a conditional diffusion imputer. Each sample is a
+12-frame ARKit blendshape sequence with shape `[L,K] = [12,52]`; frame 0 and
+frame 11 are observed endpoint conditions, and frames 1-10 are generated.
+The model receives `duration` as an extra condition embedding.
+
+Expected server data layout:
+```text
+dataset/Express4D/train.txt
+dataset/Express4D/test.txt
+dataset/Express4D/data/
+```
+
+Train:
+```shell
+python train_express4d.py --config config/express4d.yaml
+```
+
+Sample from endpoint vectors:
+```shell
+python sample_express4d.py --config config/express4d.yaml --checkpoint path/to/checkpoint.pth --input_start path/to/start.npy --input_end path/to/end.npy --duration 1.0 --output output_middle.npy
+```
+
+Evaluate on the test split:
+```shell
+python sample_express4d.py --config config/express4d.yaml --checkpoint path/to/checkpoint.pth --eval_test
+```
+
+Smoke test:
+```shell
+python smoke_test_express4d.py
+```
+
 ### Visualize results
 'visualize_examples.ipynb' is a notebook for visualizing results.
 
