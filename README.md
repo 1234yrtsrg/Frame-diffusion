@@ -217,6 +217,16 @@ CSDI/save/express4d_xxx/checkpoint_step_100000.pth
 python train_express4d.py --config config/express4d.yaml --save_interval_steps 25000
 ```
 
+如果要用多张 GPU，可以使用 `--data_parallel`。例如使用 4 张可见 GPU：
+
+```shell
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train_express4d.py \
+  --config config/express4d.yaml \
+  --device cuda:0 \
+  --max_train_steps 100000 \
+  --data_parallel
+```
+
 也可以进入 `CSDI/` 后运行：
 
 ```shell

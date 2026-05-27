@@ -5,6 +5,10 @@ from tqdm import tqdm
 import pickle
 
 
+def _unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
 def train(
     model,
     config,
@@ -35,6 +39,8 @@ def train(
                 optimizer.zero_grad()
 
                 loss = model(train_batch)
+                if loss.dim() > 0:
+                    loss = loss.mean()
                 loss.backward()
                 avg_loss += loss.item()
                 optimizer.step()
@@ -45,7 +51,7 @@ def train(
                     and global_step % save_interval_steps == 0
                 ):
                     torch.save(
-                        model.state_dict(),
+                        _unwrap_model(model).state_dict(),
                         foldername + "/checkpoint_step_" + str(global_step) + ".pth",
                     )
                 it.set_postfix(
@@ -72,6 +78,8 @@ def train(
                 with tqdm(valid_loader, mininterval=5.0, maxinterval=50.0) as it:
                     for batch_no, valid_batch in enumerate(it, start=1):
                         loss = model(valid_batch, is_train=0)
+                        if loss.dim() > 0:
+                            loss = loss.mean()
                         avg_loss_valid += loss.item()
                         it.set_postfix(
                             ordered_dict={
@@ -90,7 +98,7 @@ def train(
                 )
 
     if foldername != "":
-        torch.save(model.state_dict(), output_path)
+        torch.save(_unwrap_model(model).state_dict(), output_path)
 
 
 def quantile_loss(target, forecast, q: float, eval_points) -> float:

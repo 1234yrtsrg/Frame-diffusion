@@ -50,6 +50,11 @@ def main():
         default=None,
         help="Save checkpoint_step_*.pth every N optimizer steps.",
     )
+    parser.add_argument(
+        "--data_parallel",
+        action="store_true",
+        help="Use torch.nn.DataParallel across all visible CUDA devices.",
+    )
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -89,7 +94,16 @@ def main():
     if args.modelfolder:
         checkpoint = Path("./save") / args.modelfolder / "model.pth"
         model.load_state_dict(torch.load(checkpoint, map_location=args.device))
-    else:
+    if args.data_parallel:
+        if not torch.cuda.is_available():
+            raise RuntimeError("--data_parallel requires CUDA")
+        gpu_count = torch.cuda.device_count()
+        if gpu_count < 2:
+            raise RuntimeError("--data_parallel requires at least 2 visible CUDA devices")
+        print(f"Using DataParallel on {gpu_count} GPUs")
+        model = torch.nn.DataParallel(model)
+
+    if not args.modelfolder:
         train(
             model,
             config["train"],
