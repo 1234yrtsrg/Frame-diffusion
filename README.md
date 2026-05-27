@@ -303,10 +303,9 @@ smoke test 会临时创建一个 Express4D 风格数据目录，并检查：
 
 ## 依赖
 
-安装原 CSDI 依赖：
+安装本项目依赖：
 
 ```shell
-cd CSDI
 pip install -r requirements.txt
 ```
 

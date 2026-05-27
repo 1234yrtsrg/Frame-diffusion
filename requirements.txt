@@ -1,0 +1,14 @@
+# Core dependencies for Express4D blendshape interpolation.
+torch
+numpy
+pandas
+pyyaml
+tqdm
+matplotlib
+
+# Kept for compatibility with the original CSDI repository.
+wget
+linear_attention_transformer
+
+# Optional: used by cubic_interpolation baseline when available.
+scipy
