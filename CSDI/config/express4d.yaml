@@ -16,7 +16,7 @@ dataset:
 
 train:
   epochs: 100
-  batch_size: 128
+  batch_size: 512
   lr: 1.0e-3
   itr_per_epoch: 1.0e+8
   valid_epoch_interval: 20
