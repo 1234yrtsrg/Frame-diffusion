@@ -16,12 +16,12 @@ dataset:
 
 train:
   epochs: 100
-  batch_size: 1024
+  batch_size: 1536
   lr: 1.0e-3
   itr_per_epoch: 1.0e+8
   valid_epoch_interval: 20
   num_workers: 0
-  save_interval_steps: 50000
+  save_interval_steps: 10000
 
 diffusion:
   layers: 4
