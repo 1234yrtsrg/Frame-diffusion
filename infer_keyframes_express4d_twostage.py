@@ -142,7 +142,7 @@ def main():
     parser.add_argument("--config", default="CSDI/config/express4d.yaml")
     parser.add_argument(
         "--checkpoint",
-        default="save/express4d_20260528_023203/checkpoint_step_10000.pth",
+        default="save/express4d_20260528_032120/checkpoint_step_50000.pth",
     )
     parser.add_argument("--duration", "--duraction", dest="duration", type=float, default=3.0)
     parser.add_argument("--coarse_frames", type=int, default=12)
