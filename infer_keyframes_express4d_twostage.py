@@ -6,9 +6,9 @@ import numpy as np
 
 from infer_keyframes_express4d import (
     ARKIT_52_NAMES,
-    BLENDSHAPE_KEYFRAMES,
-    IMAGE_PATHS,
+    DEFAULT_BLENDSHAPE_JSON,
     load_config,
+    load_blendshape_keyframes,
     load_model,
     resolve_path,
     save_csv,
@@ -137,7 +137,7 @@ def refine_adjacent_sequence(model, coarse_sequence, total_duration):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Two-stage Express4D inference: 3 keyframes -> 12 coarse frames -> adjacent 10-frame refinement."
+        description="Two-stage Express4D inference: keyframe JSON -> coarse frames -> adjacent 10-frame refinement."
     )
     parser.add_argument("--config", default="CSDI/config/express4d.yaml")
     parser.add_argument(
@@ -146,6 +146,7 @@ def main():
     )
     parser.add_argument("--duration", "--duraction", dest="duration", type=float, default=3.0)
     parser.add_argument("--coarse_frames", type=int, default=12)
+    parser.add_argument("--keyframes_json", default=DEFAULT_BLENDSHAPE_JSON)
     parser.add_argument("--output_dir", default="outputs/keyframe_infer_twostage")
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
@@ -158,12 +159,14 @@ def main():
 
     config = load_config(args.config)
     model = load_model(config, args.checkpoint, device)
+    keyframes, image_paths = load_blendshape_keyframes(args.keyframes_json)
+    coarse_frames = max(args.coarse_frames, len(keyframes))
 
     coarse_sequence, keyframe_positions, coarse_segment_meta = build_coarse_sequence(
         model,
-        BLENDSHAPE_KEYFRAMES,
+        keyframes,
         total_duration=args.duration,
-        coarse_frames=args.coarse_frames,
+        coarse_frames=coarse_frames,
     )
     refined_sequence, adjacent_duration, refined_segment_meta = refine_adjacent_sequence(
         model,
@@ -174,7 +177,7 @@ def main():
     output_dir = resolve_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    np.save(output_dir / "keyframes.npy", BLENDSHAPE_KEYFRAMES)
+    np.save(output_dir / "keyframes.npy", keyframes)
     np.save(output_dir / "coarse_12_sequence.npy", coarse_sequence)
     np.save(output_dir / "refined_sequence.npy", refined_sequence)
     save_csv(output_dir / "coarse_12_sequence.csv", coarse_sequence)
@@ -183,12 +186,14 @@ def main():
     metadata = {
         "checkpoint": str(resolve_path(args.checkpoint)),
         "config": str(resolve_path(args.config)),
-        "image_paths": IMAGE_PATHS,
+        "keyframes_json": str(resolve_path(args.keyframes_json)),
+        "image_paths": image_paths,
         "arkit_52_names": ARKIT_52_NAMES,
         "total_duration": args.duration,
         "duration_unit": "seconds",
-        "input_keyframes_shape": list(BLENDSHAPE_KEYFRAMES.shape),
-        "coarse_frames": args.coarse_frames,
+        "input_keyframes_shape": list(keyframes.shape),
+        "requested_coarse_frames": args.coarse_frames,
+        "coarse_frames": coarse_frames,
         "coarse_sequence_shape": list(coarse_sequence.shape),
         "keyframe_positions_in_coarse_sequence": keyframe_positions.astype(int).tolist(),
         "coarse_stage": coarse_segment_meta,

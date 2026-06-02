@@ -68,180 +68,108 @@ ARKIT_52_NAMES = [
 ]
 
 
-IMAGE_PATHS = [
-    "outputs/states/000.png",
-    "outputs/states/001.png",
-    "outputs/states/002.png",
-]
+DEFAULT_BLENDSHAPE_JSON = "data/blendshapes.json"
+TONGUE_OUT_DEFAULT = 0.0
 
 
-BLENDSHAPE_KEYFRAMES = np.array(
-    [
-        [
-            0.6389522552490234,
-            0.6411657929420471,
-            0.00029021064983680844,
-            0.0006118063465692103,
-            0.0008069037576206028,
-            2.0384382878546603e-05,
-            1.49640953850394e-07,
-            2.470166009516106e-07,
-            0.13096295297145844,
-            0.1261022537946701,
-            0.08604716509580612,
-            0.09868430346250534,
-            0.024840811267495155,
-            0.0978197231888771,
-            0.14576587080955505,
-            0.05172456428408623,
-            0.10695620626211166,
-            0.09258322417736053,
-            0.5946202278137207,
-            0.4704403281211853,
-            0.003661601571366191,
-            0.0022283028811216354,
-            5.922576383454725e-05,
-            0.0006133257993496954,
-            0.007505400106310844,
-            3.1127849069889635e-05,
-            0.004771846812218428,
-            0.015069358050823212,
-            0.006752856075763702,
-            0.0011188649805262685,
-            0.001323020551353693,
-            0.00022146262926980853,
-            0.0013231548946350813,
-            0.00010610248136799783,
-            0.000101469959190581,
-            0.20596736669540405,
-            0.12466926872730255,
-            0.001302312477491796,
-            0.000661318888887763,
-            0.02869098260998726,
-            0.009032546542584896,
-            0.06982415169477463,
-            0.010583004914224148,
-            0.009524846449494362,
-            0.008955707773566246,
-            0.004972450435161591,
-            0.006722633261233568,
-            0.00011695056309690699,
-            0.00019117703777737916,
-            2.0970966829736426e-07,
-            7.712154683758854e-07,
-            0.0,
-        ],
-        [
-            0.6595447659492493,
-            0.6647862195968628,
-            0.0005861804238520563,
-            0.0005747302784584463,
-            0.0007497536134906113,
-            3.77539181499742e-05,
-            1.9932393513499846e-07,
-            1.5937769148877123e-07,
-            0.14731480181217194,
-            0.13492949306964874,
-            0.08664200454950333,
-            0.09982400387525558,
-            0.023395905271172523,
-            0.11813386529684067,
-            0.16271501779556274,
-            0.05296614021062851,
-            0.10493993759155273,
-            0.10756310820579529,
-            0.6009368896484375,
-            0.5293713808059692,
-            0.0037228562869131565,
-            0.0030256262980401516,
-            8.90860246727243e-05,
-            0.0008055146900005639,
-            0.004537018947303295,
-            1.694069396762643e-05,
-            0.0018962068716064095,
-            0.009166779927909374,
-            0.005477591417729855,
-            0.00014698792074341327,
-            0.00014477840159088373,
-            0.0007810455863364041,
-            0.00578073738142848,
-            0.0001094877952709794,
-            0.00013804079208057374,
-            0.0480303019285202,
-            0.03781750053167343,
-            0.01115835178643465,
-            0.00023526052245870233,
-            0.008853207342326641,
-            0.012635372579097748,
-            0.019623888656497,
-            0.006022143643349409,
-            0.7178910970687866,
-            0.661141037940979,
-            0.005138728767633438,
-            0.007094150874763727,
-            0.0004003327339887619,
-            0.0006197435432113707,
-            1.7127321427778952e-07,
-            9.779087122296914e-07,
-            0.0,
-        ],
-        [
-            0.7121870517730713,
-            0.6806215643882751,
-            0.0007876614108681679,
-            0.00048239610623568296,
-            0.001248133834451437,
-            3.893935354426503e-05,
-            5.961362035122875e-07,
-            4.491161007535993e-07,
-            0.0983935296535492,
-            0.07415531575679779,
-            0.15983998775482178,
-            0.1758294254541397,
-            0.8303061127662659,
-            0.0006389931077137589,
-            0.0015348391607403755,
-            0.8272788524627686,
-            0.05019678920507431,
-            0.049552131444215775,
-            0.6702951192855835,
-            0.49618831276893616,
-            0.005667698569595814,
-            0.008278865367174149,
-            0.00011445347627159208,
-            0.0005640859017148614,
-            0.003799069207161665,
-            3.829749039141461e-05,
-            0.0011587085900828242,
-            0.022218724712729454,
-            0.0034479694440960884,
-            0.0003154874430038035,
-            0.0003551999689079821,
-            0.0009090170497074723,
-            0.008398128673434258,
-            0.00015665461251046509,
-            0.0002388817520113662,
-            0.061241768300533295,
-            0.03744148090481758,
-            0.010285690426826477,
-            0.00011479187378427014,
-            0.011399514973163605,
-            0.01301783137023449,
-            0.0195947103202343,
-            0.005631303880363703,
-            0.6961560249328613,
-            0.621907651424408,
-            0.0053013949654996395,
-            0.013570432551205158,
-            0.0005693918792530894,
-            0.0005431175814010203,
-            1.6632223776014143e-07,
-            2.5115220978477737e-06,
-            0.0,
-        ],
-    ],
-    dtype=np.float32,
-)
+def _resolve_repo_path(path):
+    path = Path(path)
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
+def _get_blendshape_mapping(item, frame_index):
+    if isinstance(item, dict):
+        if "faces" in item:
+            faces = item.get("faces") or []
+            if not faces:
+                raise ValueError(f"Keyframe {frame_index} has no faces")
+            item = faces[0]
+        if "blendshapes" in item:
+            blendshapes = item["blendshapes"]
+            if not isinstance(blendshapes, dict):
+                raise ValueError(f"Keyframe {frame_index} blendshapes must be an object")
+            return blendshapes
+        normalized_keys = {str(key).strip().lower() for key in item.keys()}
+        if all(name.lower() in normalized_keys for name in ARKIT_52_NAMES if name != "tongueOut"):
+            return item
+    return None
+
+
+def _keyframe_to_vector(item, frame_index):
+    if isinstance(item, (list, tuple)):
+        vector = np.asarray(item, dtype=np.float32).reshape(-1)
+        if vector.shape[0] != len(ARKIT_52_NAMES):
+            raise ValueError(
+                f"Keyframe {frame_index} must contain {len(ARKIT_52_NAMES)} values, got {vector.shape[0]}"
+            )
+        return vector
+
+    blendshapes = _get_blendshape_mapping(item, frame_index)
+    if blendshapes is None:
+        raise ValueError(
+            f"Keyframe {frame_index} must be a 52-value list or contain faces[0].blendshapes"
+        )
+
+    normalized = {str(key).strip().lower(): value for key, value in blendshapes.items()}
+    values = []
+    missing = []
+    for name in ARKIT_52_NAMES:
+        key = name.lower()
+        if key in normalized:
+            values.append(normalized[key])
+        elif name == "tongueOut":
+            values.append(TONGUE_OUT_DEFAULT)
+        else:
+            missing.append(name)
+    if missing:
+        raise ValueError(f"Keyframe {frame_index} missing blendshape values: {missing}")
+    return np.asarray(values, dtype=np.float32)
+
+
+def _get_keyframe_records(data):
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("keyframes", "frames", "blendshapes"):
+            records = data.get(key)
+            if records is not None:
+                if not isinstance(records, list):
+                    raise ValueError(f"Top-level '{key}' must be a list")
+                return records
+        return [data]
+    raise ValueError("Blendshape JSON must be a list or object")
+
+
+def load_blendshape_keyframes(path=DEFAULT_BLENDSHAPE_JSON):
+    path = _resolve_repo_path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Blendshape keyframe JSON not found: {path}")
+
+    with open(path, "r", encoding="utf-8-sig") as f:
+        data = json.load(f)
+
+    records = _get_keyframe_records(data)
+    if len(records) < 2:
+        raise ValueError(f"At least two keyframes are required in {path}")
+
+    keyframes = np.stack(
+        [_keyframe_to_vector(item, index) for index, item in enumerate(records)],
+        axis=0,
+    ).astype(np.float32)
+    keyframes = np.nan_to_num(keyframes, nan=0.0, posinf=0.0, neginf=0.0)
+    keyframes = np.clip(keyframes, 0.0, 1.0).astype(np.float32)
+
+    image_paths = [
+        item.get("image_path")
+        for item in records
+        if isinstance(item, dict) and item.get("image_path")
+    ]
+    return keyframes, image_paths
+
+
+BLENDSHAPE_KEYFRAMES, IMAGE_PATHS = load_blendshape_keyframes(DEFAULT_BLENDSHAPE_JSON)
 
 
 def resolve_path(path):
@@ -351,7 +279,7 @@ def save_csv(path, sequence):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Infer Express4D sequence from embedded keyframes.")
+    parser = argparse.ArgumentParser(description="Infer Express4D sequence from keyframe JSON.")
     parser.add_argument("--config", default="CSDI/config/express4d.yaml")
     parser.add_argument(
         "--checkpoint",
@@ -359,6 +287,7 @@ def main():
     )
     parser.add_argument("--duration", "--duraction", dest="duration", type=float, default=3.0)
     parser.add_argument("--num_samples", type=int, default=1)
+    parser.add_argument("--keyframes_json", default=DEFAULT_BLENDSHAPE_JSON)
     parser.add_argument("--output_dir", default="outputs/keyframe_infer")
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
@@ -371,10 +300,11 @@ def main():
 
     config = load_config(args.config)
     model = load_model(config, args.checkpoint, device)
+    keyframes, image_paths = load_blendshape_keyframes(args.keyframes_json)
 
     sequence, segment_middles, frame_meta = infer_keyframe_sequence(
         model,
-        BLENDSHAPE_KEYFRAMES,
+        keyframes,
         duration=args.duration,
         num_samples=args.num_samples,
     )
@@ -382,7 +312,7 @@ def main():
     output_dir = resolve_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    np.save(output_dir / "keyframes.npy", BLENDSHAPE_KEYFRAMES)
+    np.save(output_dir / "keyframes.npy", keyframes)
     np.save(output_dir / "generated_sequence.npy", sequence)
     save_csv(output_dir / "generated_sequence.csv", sequence)
 
@@ -392,12 +322,13 @@ def main():
     metadata = {
         "checkpoint": str(resolve_path(args.checkpoint)),
         "config": str(resolve_path(args.config)),
+        "keyframes_json": str(resolve_path(args.keyframes_json)),
         "duration": args.duration,
         "duration_unit": "seconds",
         "duration_usage": "passed to each adjacent keyframe segment",
-        "image_paths": IMAGE_PATHS,
+        "image_paths": image_paths,
         "arkit_52_names": ARKIT_52_NAMES,
-        "input_keyframes_shape": list(BLENDSHAPE_KEYFRAMES.shape),
+        "input_keyframes_shape": list(keyframes.shape),
         "generated_sequence_shape": list(sequence.shape),
         "frame_meta": frame_meta,
     }
@@ -411,3 +342,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
