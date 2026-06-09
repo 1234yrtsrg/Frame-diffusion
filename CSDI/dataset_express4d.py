@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -224,6 +223,8 @@ def _read_npy(path):
 
 
 def _read_csv(path):
+    import pandas as pd
+
     header_df = pd.read_csv(path)
     normalized_cols = {normalize_name(col): col for col in header_df.columns}
     has_named_columns = all(normalize_name(name) in normalized_cols for name in ARKIT_52_NAMES)
@@ -258,6 +259,8 @@ def load_blendshape_file(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
 
 
 def load_vector_52(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
+    import pandas as pd
+
     data = np.load(path) if Path(path).suffix.lower() == ".npy" else np.asarray(pd.read_csv(path, header=None))
     data = np.asarray(data)
     if data.ndim == 2 and 1 in data.shape:

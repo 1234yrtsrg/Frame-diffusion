@@ -1,0 +1,48 @@
+dataset:
+  name: keyframe_segments_T30
+  root: dataset
+  npz_file: keyframe_segments_T30.npz
+  num_features: 52
+  seq_len: 30
+  num_middle: 28
+  split_seed: 1
+  split_ratios: [0.8, 0.1, 0.1]
+  clamp: true
+  clamp_min: 0.0
+  clamp_max: 1.0
+
+train:
+  epochs: 100
+  batch_size: 512
+  lr: 1.0e-3
+  itr_per_epoch: 1.0e+8
+  valid_epoch_interval: 10
+  num_workers: 0
+  save_interval_steps: 10000
+
+diffusion:
+  layers: 4
+  channels: 64
+  nheads: 8
+  diffusion_embedding_dim: 128
+  beta_start: 0.0001
+  beta_end: 0.5
+  num_steps: 50
+  schedule: "quad"
+  is_linear: false
+
+model:
+  is_unconditional: 0
+  timeemb: 128
+  featureemb: 16
+  target_strategy: "keyframe_segments"
+  num_features: 52
+  seq_len: 30
+  num_middle: 28
+  use_duration: false
+  duration_embed_dim: 128
+
+loss:
+  lambda_recon: 1.0
+  lambda_vel: 0.5
+  lambda_range: 0.0

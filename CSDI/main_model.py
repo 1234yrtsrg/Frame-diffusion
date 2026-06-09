@@ -592,10 +592,15 @@ class CSDI_Express4D(CSDI_base):
                 f"start/end must have shape [52] or [B,52], got {tuple(start.shape)} and {tuple(end.shape)}"
             )
 
-        duration = torch.as_tensor(duration, device=device).float()
-        if duration.dim() == 0:
-            duration = duration.repeat(B)
-        duration = duration.view(B)
+        if duration is None:
+            if self.use_duration:
+                raise ValueError("duration is required when model.use_duration is true")
+            duration = torch.zeros(B, device=device)
+        else:
+            duration = torch.as_tensor(duration, device=device).float()
+            if duration.dim() == 0:
+                duration = duration.repeat(B)
+            duration = duration.view(B)
 
         observed_data = torch.zeros(B, K, self.seq_len, device=device)
         observed_data[:, :, 0] = start
@@ -612,3 +617,120 @@ class CSDI_Express4D(CSDI_base):
         if was_single:
             return samples[0]
         return samples
+
+
+class CSDI_KeyframeSegmentsT30(CSDI_Express4D):
+    """CSDI variant for 30-frame keyframe segments with endpoint conditioning.
+
+    The model predicts the 28 middle frames from the first and last frame.
+    Training keeps the original diffusion objective and adds direct middle-frame
+    reconstruction and a velocity consistency term.
+    """
+
+    def __init__(self, config, device, target_dim=52):
+        super().__init__(config, device, target_dim)
+        loss_config = config.get("loss", {})
+        self.lambda_recon = float(loss_config.get("lambda_recon", 1.0))
+        self.lambda_vel = float(loss_config.get("lambda_vel", 0.5))
+        self.lambda_range = float(loss_config.get("lambda_range", 0.0))
+
+    def process_data(self, batch):
+        device = self.get_device()
+        observed_data = batch["observed_data"].to(device).float()
+        observed_mask = batch["observed_mask"].to(device).float()
+        observed_tp = batch["timepoints"].to(device).float()
+        target_mask = batch["target_mask"] if "target_mask" in batch else batch["gt_mask"]
+        target_mask = target_mask.to(device).float()
+
+        duration = batch.get("duration", None)
+        if duration is not None:
+            duration = duration.to(device).float().view(-1)
+        elif self.use_duration:
+            raise KeyError("Keyframe segment batch must contain duration when use_duration is enabled")
+
+        observed_data = observed_data.permute(0, 2, 1)
+        observed_mask = observed_mask.permute(0, 2, 1)
+        target_mask = target_mask.permute(0, 2, 1)
+
+        return observed_data, observed_mask, observed_tp, target_mask, duration
+
+    def _calc_loss_at_t(
+        self,
+        observed_data,
+        cond_mask,
+        target_mask,
+        side_info,
+        duration,
+        is_train,
+        set_t=-1,
+    ):
+        B, K, L = observed_data.shape
+        if is_train != 1:
+            t = (torch.ones(B) * set_t).long().to(observed_data.device)
+        else:
+            t = torch.randint(0, self.num_steps, [B]).to(observed_data.device)
+
+        current_alpha = self.alpha_torch[t]
+        sqrt_alpha = current_alpha ** 0.5
+        sqrt_one_minus_alpha = (1.0 - current_alpha) ** 0.5
+        noise = torch.randn_like(observed_data)
+        noisy_data = sqrt_alpha * observed_data + sqrt_one_minus_alpha * noise
+
+        total_input = self.set_input_to_diffmodel(noisy_data, observed_data, cond_mask)
+        predicted_noise = self.diffmodel(total_input, side_info, t)
+
+        target_count = target_mask.sum()
+        denom = target_count if target_count > 0 else 1
+        diffusion_loss = (((noise - predicted_noise) * target_mask) ** 2).sum() / denom
+
+        x0_pred = (noisy_data - sqrt_one_minus_alpha * predicted_noise) / sqrt_alpha
+        pred_middle = x0_pred * target_mask
+        gt_middle = observed_data * target_mask
+        recon_loss = ((pred_middle - gt_middle) ** 2).sum() / denom
+
+        pred_full = cond_mask * observed_data + target_mask * x0_pred
+        gt_full = observed_data
+        pred_velocity = pred_full[:, :, 1:] - pred_full[:, :, :-1]
+        gt_velocity = gt_full[:, :, 1:] - gt_full[:, :, :-1]
+        vel_loss = torch.mean((pred_velocity - gt_velocity) ** 2)
+
+        range_loss = torch.tensor(0.0, device=observed_data.device)
+        if self.lambda_range > 0:
+            pred_target_values = x0_pred[:, :, 1:-1]
+            range_low = torch.relu(self.clamp_min - pred_target_values) ** 2
+            range_high = torch.relu(pred_target_values - self.clamp_max) ** 2
+            range_loss = torch.mean(range_low + range_high)
+
+        total_loss = diffusion_loss + self.lambda_recon * recon_loss + self.lambda_vel * vel_loss
+        if self.lambda_range > 0:
+            total_loss = total_loss + self.lambda_range * range_loss
+        return total_loss
+
+    def forward(self, batch, is_train=1):
+        observed_data, cond_mask, observed_tp, target_mask, duration = self.process_data(batch)
+        side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)
+
+        if is_train == 1:
+            return self._calc_loss_at_t(
+                observed_data, cond_mask, target_mask, side_info, duration, is_train
+            )
+
+        loss_sum = 0
+        for t in range(self.num_steps):
+            loss_sum += self._calc_loss_at_t(
+                observed_data,
+                cond_mask,
+                target_mask,
+                side_info,
+                duration,
+                is_train,
+                set_t=t,
+            ).detach()
+        return loss_sum / self.num_steps
+
+    def evaluate(self, batch, n_samples):
+        observed_data, cond_mask, observed_tp, target_mask, duration = self.process_data(batch)
+        with torch.no_grad():
+            side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)
+            samples = self.impute(observed_data, cond_mask, side_info, n_samples)
+        return samples, observed_data, target_mask, cond_mask, observed_tp

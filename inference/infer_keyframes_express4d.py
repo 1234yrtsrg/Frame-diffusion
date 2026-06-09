@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CSDI_DIR = REPO_ROOT / "CSDI"
 sys.path.insert(0, str(CSDI_DIR))
 
@@ -342,4 +342,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
