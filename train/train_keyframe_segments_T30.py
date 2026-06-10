@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 import random
 import sys
@@ -48,6 +49,34 @@ def resolve_checkpoint_path(path):
     raise FileNotFoundError(f"Checkpoint not found: {path}")
 
 
+def resolve_save_folder(path):
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    if candidate.parts and candidate.parts[0].lower() == "save":
+        return REPO_ROOT / candidate
+    return DEFAULT_SAVE_DIR / candidate
+
+
+def _checkpoint_step_key(path):
+    match = re.search(r"checkpoint_step_(\d+)\.pth$", path.name)
+    return int(match.group(1)) if match else -1
+
+
+def find_resume_checkpoint(foldername):
+    folder = Path(foldername)
+    training_state = folder / "training_state.pth"
+    if training_state.is_file():
+        return training_state
+    model_path = folder / "model.pth"
+    if model_path.is_file():
+        return model_path
+    checkpoints = sorted(folder.glob("checkpoint_step_*.pth"), key=_checkpoint_step_key)
+    if checkpoints:
+        return checkpoints[-1]
+    return None
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -56,13 +85,38 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def load_state_dict(model, checkpoint_path, device):
-    state = torch.load(checkpoint_path, map_location=device)
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    if all(key.startswith("module.") for key in state.keys()):
-        state = {key.removeprefix("module."): value for key, value in state.items()}
-    model.load_state_dict(state)
+def load_training_checkpoint(model, checkpoint_path, device, fallback_global_step=0):
+    state = torch.load(checkpoint_path, map_location="cpu")
+    if isinstance(state, dict) and "model_state_dict" in state:
+        model_state = state["model_state_dict"]
+        resume_state = {
+            "optimizer_state_dict": state.get("optimizer_state_dict"),
+            "scheduler_state_dict": state.get("scheduler_state_dict"),
+            "global_step": int(state.get("global_step", fallback_global_step)),
+            "epoch_no": int(state.get("epoch_no", 0)),
+        }
+    elif isinstance(state, dict) and "state_dict" in state:
+        model_state = state["state_dict"]
+        resume_state = {
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "global_step": fallback_global_step,
+            "epoch_no": 0,
+        }
+    else:
+        model_state = state
+        resume_state = {
+            "optimizer_state_dict": None,
+            "scheduler_state_dict": None,
+            "global_step": fallback_global_step,
+            "epoch_no": 0,
+        }
+    if all(key.startswith("module.") for key in model_state.keys()):
+        model_state = {
+            key.removeprefix("module."): value for key, value in model_state.items()
+        }
+    model.load_state_dict(model_state)
+    return resume_state
 
 
 def main():
@@ -70,7 +124,12 @@ def main():
     parser.add_argument("--config", type=str, default="CSDI/config/keyframe_segments_T30.yaml")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--modelfolder", type=str, default="")
+    parser.add_argument(
+        "--modelfolder",
+        type=str,
+        default="keyframe_segments_T30",
+        help="Save folder to reuse and resume from under save/.",
+    )
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument(
         "--batch_size",
@@ -118,7 +177,10 @@ def main():
 
     print(json.dumps(config, indent=4))
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    foldername = DEFAULT_SAVE_DIR / f"keyframe_segments_T30_{current_time}"
+    if args.modelfolder:
+        foldername = resolve_save_folder(args.modelfolder)
+    else:
+        foldername = DEFAULT_SAVE_DIR / f"keyframe_segments_T30_{current_time}"
     print("model folder:", foldername)
     os.makedirs(foldername, exist_ok=True)
     with open(foldername / "config.json", "w", encoding="utf-8") as f:
@@ -138,13 +200,37 @@ def main():
     ).to(args.device)
 
     checkpoint_path = None
+    resume_state = None
     if args.checkpoint:
         checkpoint_path = resolve_checkpoint_path(args.checkpoint)
     elif args.modelfolder:
-        checkpoint_path = resolve_checkpoint_path(Path(args.modelfolder) / "model.pth")
+        checkpoint_path = find_resume_checkpoint(foldername)
 
     if checkpoint_path is not None:
-        load_state_dict(model, checkpoint_path, args.device)
+        fallback_global_step = max(0, _checkpoint_step_key(Path(checkpoint_path)))
+        if args.modelfolder and Path(checkpoint_path).name == "model.pth":
+            steps_per_epoch = min(
+                len(train_loader),
+                int(config["train"].get("itr_per_epoch", len(train_loader))),
+            )
+            fallback_global_step = config["train"]["epochs"] * steps_per_epoch
+            if config["train"].get("max_train_steps") is not None:
+                fallback_global_step = min(
+                    fallback_global_step,
+                    config["train"]["max_train_steps"],
+                )
+        resume_state = load_training_checkpoint(
+            model,
+            checkpoint_path,
+            args.device,
+            fallback_global_step=fallback_global_step,
+        )
+        print(
+            f"Resuming from {checkpoint_path} at global_step "
+            f"{resume_state['global_step']}"
+        )
+    elif args.modelfolder:
+        print(f"No checkpoint found in {foldername}; starting from scratch")
 
     if args.data_parallel:
         if not torch.cuda.is_available():
@@ -162,6 +248,7 @@ def main():
         valid_loader=valid_loader,
         valid_epoch_interval=config["train"].get("valid_epoch_interval", 20),
         foldername=str(foldername),
+        resume_state=resume_state,
     )
 
 
