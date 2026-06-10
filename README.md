@@ -378,3 +378,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train/train_keyframe_segments_T30.py
   -MaxTrainSteps 50000 `
   -SaveIntervalSteps 10000
 ```
+
+推理 `data/blendshapes.json` 中选定的两个关键帧并补全中间 28 帧：
+
+```bash
+python inference/infer_keyframe_segments_T30.py \
+  --keyframes_json data/blendshapes.json \
+  --start_index 0 \
+  --end_index -1 \
+  --output_dir outputs/keyframe_segments_T30_infer
+```
