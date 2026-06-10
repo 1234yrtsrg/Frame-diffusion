@@ -68,12 +68,12 @@ def find_resume_checkpoint(foldername):
     training_state = folder / "training_state.pth"
     if training_state.is_file():
         return training_state
-    model_path = folder / "model.pth"
-    if model_path.is_file():
-        return model_path
     checkpoints = sorted(folder.glob("checkpoint_step_*.pth"), key=_checkpoint_step_key)
     if checkpoints:
         return checkpoints[-1]
+    model_path = folder / "model.pth"
+    if model_path.is_file():
+        return model_path
     return None
 
 
