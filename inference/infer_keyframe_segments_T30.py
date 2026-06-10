@@ -76,12 +76,6 @@ def load_model(config, checkpoint_path, device):
     return model
 
 
-def normalize_index(index, length, name):
-    if not -length <= index < length:
-        raise IndexError(f"{name}={index} is out of range for length {length}")
-    return index % length
-
-
 def load_keyframes_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
     keyframes, image_paths = load_blendshape_keyframes(path)
     keyframes = np.asarray(keyframes, dtype=np.float32)
@@ -91,44 +85,93 @@ def load_keyframes_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
     return keyframes.astype(np.float32), image_paths
 
 
-def save_outputs(output_dir, middle, start, end, args, source_meta):
+def generate_sequence(model, keyframes, duration, clip_output, clamp_min, clamp_max):
+    sequence_parts = []
+    segment_meta = []
+
+    for segment_index in range(len(keyframes) - 1):
+        start = keyframes[segment_index]
+        end = keyframes[segment_index + 1]
+
+        with torch.no_grad():
+            middle = model.generate_middle(
+                torch.from_numpy(start),
+                torch.from_numpy(end),
+                duration,
+                num_samples=1,
+            )
+
+        middle = middle.detach().cpu().numpy().astype(np.float32)[0]
+        if middle.shape != (28, 52):
+            raise AssertionError(f"Expected middle shape (28, 52), got {middle.shape}")
+        if clip_output:
+            middle = np.clip(middle, clamp_min, clamp_max).astype(np.float32)
+
+        segment = np.concatenate([start[None], middle, end[None]], axis=0)
+        sequence_parts.append(segment if segment_index == 0 else segment[1:])
+        segment_meta.append(
+            {
+                "segment_index": segment_index,
+                "start_keyframe_index": segment_index,
+                "end_keyframe_index": segment_index + 1,
+                "output_start_frame": segment_index * 29,
+                "output_end_frame": (segment_index + 1) * 29,
+            }
+        )
+
+    generated_sequence = np.concatenate(sequence_parts, axis=0).astype(np.float32)
+    return generated_sequence, segment_meta
+
+
+def save_outputs(
+    output_dir,
+    keyframes,
+    generated_sequence,
+    image_paths,
+    segment_meta,
+    args,
+):
     output_dir = resolve_path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    full_sequence = np.concatenate([start[None], middle, end[None]], axis=0).astype(np.float32)
-    middle_path = output_dir / "middle_28.npy"
-    full_path = output_dir / "full_sequence_30.npy"
+    keyframes_path = output_dir / "keyframes.npy"
+    sequence_path = output_dir / "generated_sequence.npy"
     metadata_path = output_dir / "metadata.json"
 
-    np.save(middle_path, middle.astype(np.float32))
-    np.save(full_path, full_sequence)
+    for obsolete_name in ("middle_28.npy", "full_sequence_30.npy", "segment_middles.npy"):
+        obsolete_path = output_dir / obsolete_name
+        if obsolete_path.is_file():
+            obsolete_path.unlink()
+
+    np.save(keyframes_path, keyframes)
+    np.save(sequence_path, generated_sequence)
 
     metadata = {
         "checkpoint": str(resolve_path(args.checkpoint)),
         "config": str(resolve_path(args.config)),
         "keyframes_json": str(resolve_path(args.keyframes_json)),
-        "start_index": args.start_index,
-        "end_index": args.end_index,
         "duration": args.duration,
         "num_samples": args.num_samples,
         "seed": args.seed,
-        "middle_shape": list(middle.shape),
-        "full_sequence_shape": list(full_sequence.shape),
-        "middle_path": str(middle_path),
-        "full_sequence_path": str(full_path),
-        "selected_keyframes": source_meta,
+        "input_keyframes_shape": list(keyframes.shape),
+        "generated_sequence_shape": list(generated_sequence.shape),
+        "image_paths": image_paths,
+        "keyframe_output_positions": [index * 29 for index in range(len(keyframes))],
+        "segments": segment_meta,
+        "keyframes_path": str(keyframes_path),
+        "generated_sequence_path": str(sequence_path),
     }
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"saved middle frames: {middle_path} {middle.shape}")
-    print(f"saved full sequence: {full_path} {full_sequence.shape}")
-    print(f"saved metadata:      {metadata_path}")
+    print(f"saved keyframes:          {keyframes_path} {keyframes.shape}")
+    print(f"saved generated sequence: {sequence_path} {generated_sequence.shape}")
+    print(f"saved metadata:           {metadata_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Infer 28 middle frames from two endpoint keyframes using the T30 model."
+        description="Fill 28 frames between every adjacent keyframe in a blendshape JSON."
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG)
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
@@ -136,18 +179,6 @@ def main():
         "--keyframes_json",
         default=DEFAULT_BLENDSHAPE_JSON,
         help="Path to a JSON file containing one or more blendshape keyframes.",
-    )
-    parser.add_argument(
-        "--start_index",
-        type=int,
-        default=0,
-        help="Start keyframe index inside the JSON list. Negative values are allowed.",
-    )
-    parser.add_argument(
-        "--end_index",
-        type=int,
-        default=-1,
-        help="End keyframe index inside the JSON list. Negative values are allowed.",
     )
     parser.add_argument("--output_dir", default="outputs/keyframe_segments_T30_infer")
     parser.add_argument("--duration", type=float, default=None)
@@ -182,39 +213,31 @@ def main():
         clamp_min=clamp_min,
         clamp_max=clamp_max,
     )
-    start_index = normalize_index(args.start_index, len(keyframes), "start_index")
-    end_index = normalize_index(args.end_index, len(keyframes), "end_index")
-    if start_index == end_index:
-        raise ValueError("start_index and end_index must point to different keyframes")
-
-    start = keyframes[start_index]
-    end = keyframes[end_index]
     model = load_model(config, args.checkpoint, device)
+    generated_sequence, segment_meta = generate_sequence(
+        model,
+        keyframes,
+        duration=args.duration,
+        clip_output=args.clip_output,
+        clamp_min=clamp_min,
+        clamp_max=clamp_max,
+    )
 
-    with torch.no_grad():
-        middle = model.generate_middle(
-            torch.from_numpy(start),
-            torch.from_numpy(end),
-            args.duration,
-            num_samples=args.num_samples,
+    expected_frames = 1 + 29 * (len(keyframes) - 1)
+    if generated_sequence.shape != (expected_frames, 52):
+        raise AssertionError(
+            f"Expected generated shape {(expected_frames, 52)}, "
+            f"got {generated_sequence.shape}"
         )
 
-    middle = middle.detach().cpu().numpy().astype(np.float32)[0]
-    if middle.shape != (28, 52):
-        raise AssertionError(f"Expected middle shape (28, 52), got {middle.shape}")
-    if args.clip_output:
-        middle = np.clip(middle, clamp_min, clamp_max).astype(np.float32)
-
-    source_meta = {
-        "total_keyframes": int(len(keyframes)),
-        "start_image_path": image_paths[start_index]
-        if len(image_paths) == len(keyframes)
-        else None,
-        "end_image_path": image_paths[end_index] if len(image_paths) == len(keyframes) else None,
-        "start_index": start_index,
-        "end_index": end_index,
-    }
-    save_outputs(args.output_dir, middle, start, end, args, source_meta)
+    save_outputs(
+        args.output_dir,
+        keyframes,
+        generated_sequence,
+        image_paths,
+        segment_meta,
+        args,
+    )
 
 
 if __name__ == "__main__":
