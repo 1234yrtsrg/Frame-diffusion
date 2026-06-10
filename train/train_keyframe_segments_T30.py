@@ -73,6 +73,12 @@ def main():
     parser.add_argument("--modelfolder", type=str, default="")
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="Override train.batch_size from the config file.",
+    )
+    parser.add_argument(
         "--max_train_steps",
         type=int,
         default=None,
@@ -97,6 +103,10 @@ def main():
         config = yaml.safe_load(f)
     config["seed"] = args.seed
 
+    if args.batch_size is not None:
+        if args.batch_size <= 0:
+            raise ValueError("--batch_size must be positive")
+        config["train"]["batch_size"] = args.batch_size
     if args.max_train_steps is not None:
         if args.max_train_steps <= 0:
             raise ValueError("--max_train_steps must be positive")

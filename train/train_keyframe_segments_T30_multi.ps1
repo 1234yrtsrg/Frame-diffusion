@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$CudaVisibleDevices,
   [string]$Device = "cuda:0",
+  [int]$BatchSize = 0,
   [int]$MaxTrainSteps = 0,
   [int]$SaveIntervalSteps = 0
 )
@@ -21,6 +22,9 @@ $trainArgs = @(
   "--data_parallel"
 )
 
+if ($BatchSize -gt 0) {
+  $trainArgs += @("--batch_size", "$BatchSize")
+}
 if ($MaxTrainSteps -gt 0) {
   $trainArgs += @("--max_train_steps", "$MaxTrainSteps")
 }

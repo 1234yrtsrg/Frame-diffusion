@@ -339,6 +339,7 @@ $env:CUDA_VISIBLE_DEVICES = "0"
 python train/train_keyframe_segments_T30.py `
   --config CSDI/config/keyframe_segments_T30.yaml `
   --device cuda:0 `
+  --batch_size 512 `
   --max_train_steps 50000 `
   --save_interval_steps 10000
 ```
@@ -350,6 +351,7 @@ $env:CUDA_VISIBLE_DEVICES = "0,1,2,3"
 python train/train_keyframe_segments_T30.py `
   --config CSDI/config/keyframe_segments_T30.yaml `
   --device cuda:0 `
+  --batch_size 512 `
   --max_train_steps 50000 `
   --save_interval_steps 10000 `
   --data_parallel
@@ -358,12 +360,7 @@ python train/train_keyframe_segments_T30.py `
 Bash 多卡示例：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 python train/train_keyframe_segments_T30.py \
-  --config CSDI/config/keyframe_segments_T30.yaml \
-  --device cuda:0 \
-  --max_train_steps 50000 \
-  --save_interval_steps 10000 \
-  --data_parallel
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train/train_keyframe_segments_T30.py --config CSDI/config/keyframe_segments_T30.yaml --device cuda:0 --batch_size 1024 --max_train_steps 50000 --save_interval_steps 10000 --data_parallel
 ```
 
 也可以用脚本，但卡号和训练步数仍然从命令行传入：
@@ -371,11 +368,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python train/train_keyframe_segments_T30.py \
 ```powershell
 .\train\train_keyframe_segments_T30_single.ps1 `
   -CudaVisibleDevices "0" `
+  -BatchSize 512 `
   -MaxTrainSteps 50000 `
   -SaveIntervalSteps 10000
 
 .\train\train_keyframe_segments_T30_multi.ps1 `
   -CudaVisibleDevices "0,1,2,3" `
+  -BatchSize 512 `
   -MaxTrainSteps 50000 `
   -SaveIntervalSteps 10000
 ```
