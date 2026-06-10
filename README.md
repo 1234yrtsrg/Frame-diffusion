@@ -327,3 +327,55 @@ diffusion:
 ```
 
 因此默认不需要使用 `linear_attention_transformer`。
+
+## 30 帧关键帧区间数据集训练
+
+`dataset/keyframe_segments_T30.npz` 用 `train/train_keyframe_segments_T30.py` 训练。数据集按 `source_ids` 划分 train/valid/test，不按片段随机划分。
+
+PowerShell 单卡示例：
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = "0"
+python train/train_keyframe_segments_T30.py `
+  --config CSDI/config/keyframe_segments_T30.yaml `
+  --device cuda:0 `
+  --max_train_steps 50000 `
+  --save_interval_steps 10000
+```
+
+PowerShell 多卡示例：
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = "0,1,2,3"
+python train/train_keyframe_segments_T30.py `
+  --config CSDI/config/keyframe_segments_T30.yaml `
+  --device cuda:0 `
+  --max_train_steps 50000 `
+  --save_interval_steps 10000 `
+  --data_parallel
+```
+
+Bash 多卡示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train/train_keyframe_segments_T30.py \
+  --config CSDI/config/keyframe_segments_T30.yaml \
+  --device cuda:0 \
+  --max_train_steps 50000 \
+  --save_interval_steps 10000 \
+  --data_parallel
+```
+
+也可以用脚本，但卡号和训练步数仍然从命令行传入：
+
+```powershell
+.\train\train_keyframe_segments_T30_single.ps1 `
+  -CudaVisibleDevices "0" `
+  -MaxTrainSteps 50000 `
+  -SaveIntervalSteps 10000
+
+.\train\train_keyframe_segments_T30_multi.ps1 `
+  -CudaVisibleDevices "0,1,2,3" `
+  -MaxTrainSteps 50000 `
+  -SaveIntervalSteps 10000
+```
