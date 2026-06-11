@@ -18,7 +18,7 @@ from main_model import CSDI_KeyframeSegmentsT30
 
 
 DEFAULT_CONFIG = "CSDI/config/keyframe_segments_T30.yaml"
-DEFAULT_CHECKPOINT = "save/keyframe_segments_T30/checkpoint_step_10000.pth"
+DEFAULT_CHECKPOINT = "save/keyframe_segments_T30/checkpoint_step_40000.pth"
 
 
 def resolve_path(path):
