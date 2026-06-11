@@ -379,35 +379,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train/train_keyframe_segments_T30.py
   -SaveIntervalSteps 10000
 ```
 
-推理 `data/blendshapes.json` 中所有相邻关键帧，并拼成完整长序列：
+推理 `data/blendshapes.json` 中选定的两个关键帧并补全中间 28 帧：
 
 ```bash
-python inference/infer_keyframe_segments_T30.py \
-  --keyframes_json data/blendshapes.json \
-  --checkpoint save/keyframe_segments_T30/checkpoint_step_10000.pth
+python inference/infer_keyframe_segments_T30.py --keyframes_json data/blendshapes.json --checkpoint save/keyframe_segments_T30/checkpoint_step_10000.pth
 ```
-
-在数据集 test split 上做 30 帧补帧对比评估：
-
-```bash
-python inference/evaluate_keyframe_segments_T30_compare.py \
-  --t30_checkpoint save/keyframe_segments_T30/checkpoint_step_10000.pth \
-  --express4d_checkpoint CSDI/save/express4d_xxx/model.pth \
-  --split test
-```
-
-输出包含四组结果：
-
-- `linear_baseline_30`：直接首尾线性插到 30 帧
-- `cubic_baseline_30`：直接首尾 cubic 插到 30 帧
-- `express4d_10_upsample_to_30`：Express4D 先补 10 帧，再把 12 帧序列重采样到 30 帧
-- `keyframe_segments_T30`：T30 模型直接生成 28 帧
-
-四组结果使用同一套指标：
-
-- `middle_l1` / `middle_mse`：中间帧补全误差
-- `velocity_l1`：相邻帧变化量误差
-- `acceleration_l1`：二阶变化量误差
-- `endpoint_continuity_start` / `endpoint_continuity_end`：生成序列在首尾附近的变化幅度
-
-如果想只快速抽查一小部分，可加 `--max_batches 1`。
