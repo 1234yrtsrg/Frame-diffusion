@@ -16,10 +16,14 @@ class CSDI_base(nn.Module):
         self.target_strategy = config["model"]["target_strategy"]
         self.use_duration = config["model"].get("use_duration", False)
         self.duration_embed_dim = config["model"].get("duration_embed_dim", 0)
+        self.use_condition = config["model"].get("use_condition", False)
+        self.condition_embed_dim = config["model"].get("condition_embed_dim", 0)
 
         self.emb_total_dim = self.emb_time_dim + self.emb_feature_dim
         if self.use_duration:
             self.emb_total_dim += self.duration_embed_dim
+        if self.use_condition:
+            self.emb_total_dim += self.condition_embed_dim
         if self.is_unconditional == False:
             self.emb_total_dim += 1  # for conditional mask
         self.embed_layer = nn.Embedding(
@@ -30,6 +34,12 @@ class CSDI_base(nn.Module):
                 nn.Linear(1, self.duration_embed_dim),
                 nn.SiLU(),
                 nn.Linear(self.duration_embed_dim, self.duration_embed_dim),
+            )
+        if self.use_condition:
+            self.condition_mlp = nn.Sequential(
+                nn.Linear(1, self.condition_embed_dim),
+                nn.SiLU(),
+                nn.Linear(self.condition_embed_dim, self.condition_embed_dim),
             )
 
         config_diff = config["diffusion"]
@@ -102,7 +112,7 @@ class CSDI_base(nn.Module):
         return observed_mask * test_pattern_mask
 
 
-    def get_side_info(self, observed_tp, cond_mask, duration=None):
+    def get_side_info(self, observed_tp, cond_mask, duration=None, condition=None):
         B, K, L = cond_mask.shape
         device = cond_mask.device
 
@@ -125,6 +135,16 @@ class CSDI_base(nn.Module):
                 -1, -1, K, L
             )
             side_info = torch.cat([side_info, duration_embed], dim=1)
+
+        if self.use_condition:
+            if condition is None:
+                raise ValueError("condition is required when model.use_condition is true")
+            condition = condition.to(device).float().view(B, 1)
+            condition_embed = self.condition_mlp(condition)
+            condition_embed = condition_embed.unsqueeze(-1).unsqueeze(-1).expand(
+                -1, -1, K, L
+            )
+            side_info = torch.cat([side_info, condition_embed], dim=1)
 
         if self.is_unconditional == False:
             side_mask = cond_mask.unsqueeze(1)  # (B,1,K,L)
@@ -479,17 +499,23 @@ class CSDI_Express4D(CSDI_base):
         observed_tp = batch["timepoints"].to(device).float()
         target_mask = batch["target_mask"] if "target_mask" in batch else batch["gt_mask"]
         target_mask = target_mask.to(device).float()
-        duration = batch.get("duration", batch.get("duraction"))
-        if duration is None:
-            raise KeyError("Express4D batch must contain duration")
-        duration = duration.to(device).float().view(-1)
+        if self.use_condition:
+            condition = batch.get("condition", None)
+            if condition is None:
+                raise KeyError("Express4D batch must contain condition when use_condition is enabled")
+            side_condition = condition.to(device).float().view(-1)
+        else:
+            duration = batch.get("duration", batch.get("duraction"))
+            if duration is None:
+                raise KeyError("Express4D batch must contain duration")
+            side_condition = duration.to(device).float().view(-1)
 
         # Dataset returns [B,L,K]; CSDI diffusion blocks use [B,K,L].
         observed_data = observed_data.permute(0, 2, 1)
         observed_mask = observed_mask.permute(0, 2, 1)
         target_mask = target_mask.permute(0, 2, 1)
 
-        return observed_data, observed_mask, observed_tp, target_mask, duration
+        return observed_data, observed_mask, observed_tp, target_mask, side_condition
 
     def _calc_loss_at_t(
         self,
@@ -497,7 +523,7 @@ class CSDI_Express4D(CSDI_base):
         cond_mask,
         target_mask,
         side_info,
-        duration,
+        side_condition,
         is_train,
         set_t=-1,
     ):
@@ -535,10 +561,9 @@ class CSDI_Express4D(CSDI_base):
         gt_acc = gt_full[:, :, 2:] - 2 * gt_full[:, :, 1:-1] + gt_full[:, :, :-2]
         acc_loss = torch.mean(torch.abs(pred_acc - gt_acc))
 
-        pred_middle = x0_pred[:, :, 1 : 1 + self.num_middle]
-        range_low = torch.relu(self.clamp_min - pred_middle) ** 2
-        range_high = torch.relu(pred_middle - self.clamp_max) ** 2
-        range_loss = torch.mean(range_low + range_high)
+        range_low = torch.relu(self.clamp_min - x0_pred) ** 2
+        range_high = torch.relu(x0_pred - self.clamp_max) ** 2
+        range_loss = ((range_low + range_high) * target_mask).sum() / denom
 
         total_loss = (
             diffusion_loss
@@ -550,12 +575,17 @@ class CSDI_Express4D(CSDI_base):
         return total_loss
 
     def forward(self, batch, is_train=1):
-        observed_data, cond_mask, observed_tp, target_mask, duration = self.process_data(batch)
-        side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)
+        observed_data, cond_mask, observed_tp, target_mask, side_condition = self.process_data(batch)
+        side_info = self.get_side_info(
+            observed_tp,
+            cond_mask,
+            duration=None if self.use_condition else side_condition,
+            condition=side_condition if self.use_condition else None,
+        )
 
         if is_train == 1:
             return self._calc_loss_at_t(
-                observed_data, cond_mask, target_mask, side_info, duration, is_train
+                observed_data, cond_mask, target_mask, side_info, side_condition, is_train
             )
 
         loss_sum = 0
@@ -565,20 +595,25 @@ class CSDI_Express4D(CSDI_base):
                 cond_mask,
                 target_mask,
                 side_info,
-                duration,
+                side_condition,
                 is_train,
                 set_t=t,
             ).detach()
         return loss_sum / self.num_steps
 
     def evaluate(self, batch, n_samples):
-        observed_data, cond_mask, observed_tp, target_mask, duration = self.process_data(batch)
+        observed_data, cond_mask, observed_tp, target_mask, side_condition = self.process_data(batch)
         with torch.no_grad():
-            side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)
+            side_info = self.get_side_info(
+                observed_tp,
+                cond_mask,
+                duration=None if self.use_condition else side_condition,
+                condition=side_condition if self.use_condition else None,
+            )
             samples = self.impute(observed_data, cond_mask, side_info, n_samples)
         return samples, observed_data, target_mask, cond_mask, observed_tp
 
-    def generate_middle(self, start, end, duration, num_samples=1):
+    def generate_middle(self, start, end, duration, num_samples=1, condition=None):
         device = self.get_device()
         was_single = start.dim() == 1
         if was_single:
@@ -592,15 +627,25 @@ class CSDI_Express4D(CSDI_base):
                 f"start/end must have shape [52] or [B,52], got {tuple(start.shape)} and {tuple(end.shape)}"
             )
 
-        if duration is None:
-            if self.use_duration:
-                raise ValueError("duration is required when model.use_duration is true")
-            duration = torch.zeros(B, device=device)
+        if self.use_condition:
+            if condition is None:
+                condition = duration
+            if condition is None:
+                raise ValueError("condition is required when model.use_condition is true")
+            side_condition = torch.as_tensor(condition, device=device).float()
+            if side_condition.dim() == 0:
+                side_condition = side_condition.repeat(B)
+            side_condition = side_condition.view(B)
         else:
-            duration = torch.as_tensor(duration, device=device).float()
-            if duration.dim() == 0:
-                duration = duration.repeat(B)
-            duration = duration.view(B)
+            if duration is None:
+                if self.use_duration:
+                    raise ValueError("duration is required when model.use_duration is true")
+                side_condition = torch.zeros(B, device=device)
+            else:
+                side_condition = torch.as_tensor(duration, device=device).float()
+                if side_condition.dim() == 0:
+                    side_condition = side_condition.repeat(B)
+                side_condition = side_condition.view(B)
 
         observed_data = torch.zeros(B, K, self.seq_len, device=device)
         observed_data[:, :, 0] = start
@@ -611,7 +656,12 @@ class CSDI_Express4D(CSDI_base):
         observed_tp = torch.arange(self.seq_len, device=device).float().unsqueeze(0).expand(B, -1)
 
         with torch.no_grad():
-            side_info = self.get_side_info(observed_tp, cond_mask, duration=duration)
+            side_info = self.get_side_info(
+                observed_tp,
+                cond_mask,
+                duration=None if self.use_condition else side_condition,
+                condition=side_condition if self.use_condition else None,
+            )
             samples = self.impute(observed_data, cond_mask, side_info, num_samples)
             samples = samples.permute(0, 1, 3, 2)[:, :, 1 : 1 + self.num_middle, :]
         if was_single:

@@ -9,14 +9,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $repoRoot
 
 $env:CUDA_VISIBLE_DEVICES = $CudaVisibleDevices
 $env:NCCL_DEBUG = "WARN"
 
 $trainArgs = @(
-  "train/train_keyframe_segments_T30.py",
+  "train/keyframe_segments_T30/train_keyframe_segments_T30.py",
   "--config", "CSDI/config/keyframe_segments_T30.yaml",
   "--device", $Device,
   "--data_parallel"
