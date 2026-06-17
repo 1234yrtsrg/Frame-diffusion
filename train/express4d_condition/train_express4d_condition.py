@@ -127,8 +127,8 @@ def main():
     parser.add_argument(
         "--modelfolder",
         type=str,
-        default="",
-        help="Save folder under save/. Empty creates save/express4d_condition_TIMESTAMP.",
+        default="express4d_condition",
+        help="Save/resume folder under save/. Empty creates save/express4d_condition_TIMESTAMP.",
     )
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--batch_size", type=int, default=None)
