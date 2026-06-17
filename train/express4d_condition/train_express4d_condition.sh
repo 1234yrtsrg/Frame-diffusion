@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,7}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 
 python train/express4d_condition/train_express4d_condition.py \
