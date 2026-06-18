@@ -11,13 +11,14 @@ import numpy as np
 import torch
 import yaml
 
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CSDI_DIR = REPO_ROOT / "CSDI"
 sys.path.insert(0, str(CSDI_DIR))
 
-from dataset_keyframe_segments_t30 import get_dataloader
-from main_model import CSDI_KeyframeSegmentsT30
-from utils import train
+from dataset_keyframe_dataset_60fps import get_dataloader  # noqa: E402
+from main_model import CSDI_Express4D  # noqa: E402
+from utils import train  # noqa: E402
 
 
 DEFAULT_SAVE_DIR = REPO_ROOT / "save"
@@ -27,7 +28,7 @@ def resolve_config_path(path):
     candidate = Path(path)
     if candidate.is_file():
         return candidate
-    for base in (Path(__file__).resolve().parent, REPO_ROOT, REPO_ROOT / "CSDI"):
+    for base in (Path(__file__).resolve().parent, REPO_ROOT, CSDI_DIR):
         candidate = base / path
         if candidate.is_file():
             return candidate
@@ -85,7 +86,7 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def load_training_checkpoint(model, checkpoint_path, device, fallback_global_step=0):
+def load_training_checkpoint(model, checkpoint_path, fallback_global_step=0):
     state = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(state, dict) and "model_state_dict" in state:
         model_state = state["model_state_dict"]
@@ -111,49 +112,36 @@ def load_training_checkpoint(model, checkpoint_path, device, fallback_global_ste
             "global_step": fallback_global_step,
             "epoch_no": 0,
         }
+
     if all(key.startswith("module.") for key in model_state.keys()):
-        model_state = {
-            key.removeprefix("module."): value for key, value in model_state.items()
-        }
+        model_state = {key.removeprefix("module."): value for key, value in model_state.items()}
     model.load_state_dict(model_state)
     return resume_state
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train CSDI for keyframe segment interpolation")
-    parser.add_argument("--config", type=str, default="CSDI/config/keyframe_segments_T30.yaml")
+    parser = argparse.ArgumentParser(description="Train CSDI on keyframe_dataset_60fps")
+    parser.add_argument("--config", type=str, default="CSDI/config/keyframe_dataset_60fps.yaml")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--modelfolder",
         type=str,
-        default="keyframe_segments_T30",
-        help="Save folder to reuse and resume from under save/.",
+        default="keyframe_dataset_60fps",
+        help="Save/resume folder under save/. Empty creates save/keyframe_dataset_60fps_TIMESTAMP.",
     )
     parser.add_argument("--checkpoint", type=str, default="")
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--max_train_steps", type=int, default=None)
+    parser.add_argument("--save_interval_steps", type=int, default=None)
+    parser.add_argument("--dataset_root", type=str, default=None, help="Override dataset root path.")
     parser.add_argument(
-        "--batch_size",
-        type=int,
+        "--data_dirs",
+        type=str,
         default=None,
-        help="Override train.batch_size from the config file.",
+        help="Comma-separated subdirectories under dataset_root, default: dfew,express4d",
     )
-    parser.add_argument(
-        "--max_train_steps",
-        type=int,
-        default=None,
-        help="Stop training after this many optimizer steps and save model.pth.",
-    )
-    parser.add_argument(
-        "--save_interval_steps",
-        type=int,
-        default=None,
-        help="Save checkpoint_step_*.pth every N optimizer steps.",
-    )
-    parser.add_argument(
-        "--data_parallel",
-        action="store_true",
-        help="Use torch.nn.DataParallel across all visible CUDA devices.",
-    )
+    parser.add_argument("--data_parallel", action="store_true")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -161,6 +149,11 @@ def main():
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     config["seed"] = args.seed
+
+    if args.dataset_root is not None:
+        config["dataset"]["root"] = args.dataset_root
+    if args.data_dirs is not None:
+        config["dataset"]["data_dirs"] = [item.strip() for item in args.data_dirs.split(",") if item.strip()]
 
     if args.batch_size is not None:
         if args.batch_size <= 0:
@@ -175,25 +168,33 @@ def main():
             raise ValueError("--save_interval_steps must be positive")
         config["train"]["save_interval_steps"] = args.save_interval_steps
 
-    print(json.dumps(config, indent=4))
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    if args.modelfolder:
-        foldername = resolve_save_folder(args.modelfolder)
-    else:
-        foldername = DEFAULT_SAVE_DIR / f"keyframe_segments_T30_{current_time}"
-    print("model folder:", foldername)
+    foldername = (
+        resolve_save_folder(args.modelfolder)
+        if args.modelfolder
+        else DEFAULT_SAVE_DIR / f"keyframe_dataset_60fps_{current_time}"
+    )
     os.makedirs(foldername, exist_ok=True)
+
+    print(json.dumps(config, indent=4))
+    print("model folder:", foldername)
     with open(foldername / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
-    train_loader, valid_loader, test_loader = get_dataloader(
+    train_loader, test_loader = get_dataloader(
         config,
         seed=args.seed,
         batch_size=config["train"]["batch_size"],
         num_workers=config["train"].get("num_workers", 0),
     )
+    train_dataset = train_loader.dataset
+    print("train dataset counts:", dict(sorted(train_dataset.dataset_counts.items())))
+    print("train condition counts:", dict(sorted(train_dataset.condition_counts.items())))
+    print("target condition ratios:", dict(sorted(train_dataset.condition_ratios.items())))
+    print("epoch target counts:", dict(sorted(train_loader.sampler.target_counts.items())))
+    print("samples per epoch:", len(train_loader.sampler))
 
-    model = CSDI_KeyframeSegmentsT30(
+    model = CSDI_Express4D(
         config,
         args.device,
         target_dim=config["dataset"].get("num_features", 52),
@@ -208,27 +209,12 @@ def main():
 
     if checkpoint_path is not None:
         fallback_global_step = max(0, _checkpoint_step_key(Path(checkpoint_path)))
-        if args.modelfolder and Path(checkpoint_path).name == "model.pth":
-            steps_per_epoch = min(
-                len(train_loader),
-                int(config["train"].get("itr_per_epoch", len(train_loader))),
-            )
-            fallback_global_step = config["train"]["epochs"] * steps_per_epoch
-            if config["train"].get("max_train_steps") is not None:
-                fallback_global_step = min(
-                    fallback_global_step,
-                    config["train"]["max_train_steps"],
-                )
         resume_state = load_training_checkpoint(
             model,
             checkpoint_path,
-            args.device,
             fallback_global_step=fallback_global_step,
         )
-        print(
-            f"Resuming from {checkpoint_path} at global_step "
-            f"{resume_state['global_step']}"
-        )
+        print(f"Resuming from {checkpoint_path} at global_step {resume_state['global_step']}")
     elif args.modelfolder:
         print(f"No checkpoint found in {foldername}; starting from scratch")
 
@@ -245,7 +231,7 @@ def main():
         model,
         config["train"],
         train_loader,
-        valid_loader=valid_loader,
+        valid_loader=test_loader,
         valid_epoch_interval=config["train"].get("valid_epoch_interval", 20),
         foldername=str(foldername),
         resume_state=resume_state,
