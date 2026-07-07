@@ -2,8 +2,8 @@ dataset:
   name: express4d
   root: dataset/Express4D
   data_dir: data
-  train_list: train.txt
-  test_list: test.txt
+  train_list: express4d_train.txt
+  test_list: express4d_test.txt
   fps: 60
   num_features: 52
   seq_len: 12

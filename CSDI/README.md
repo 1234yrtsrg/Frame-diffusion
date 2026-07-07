@@ -63,9 +63,9 @@ Sample from endpoint vectors:
 python sample_express4d.py --config config/express4d.yaml --checkpoint path/to/checkpoint.pth --input_start path/to/start.npy --input_end path/to/end.npy --duration 1.0 --output output_middle.npy
 ```
 
-Evaluate on the test split:
+Evaluate on the unified keyframe_dataset_60fps test split with the two-stage condition=1 -> condition=3 pipeline:
 ```shell
-python sample_express4d.py --config config/express4d.yaml --checkpoint path/to/checkpoint.pth --eval_test
+python inference/evaluate_models.py --express4d_duration_checkpoint path/to/checkpoint.pth
 ```
 
 Smoke test:

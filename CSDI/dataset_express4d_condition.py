@@ -1,5 +1,6 @@
 from collections import Counter
 from pathlib import Path
+import json
 import sys
 
 import math
@@ -20,7 +21,6 @@ from dataset_express4d import (
     load_blendshape_file,
     resolve_dataset_root,
 )
-from train.express4d_condition.detect_keyframes import detect_blendshape_keyframes
 
 
 def _normalize_int_mapping(mapping, default):
@@ -37,6 +37,141 @@ def _normalize_float_mapping(mapping, default):
     if total <= 0:
         raise ValueError("condition ratios must sum to a positive value")
     return {key: value / total for key, value in values.items()}
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [value]
+
+
+def _as_ratio_pair(split_ratios):
+    ratios = np.asarray(split_ratios, dtype=np.float64)
+    if ratios.shape != (2,):
+        raise ValueError(f"split_ratios must contain train/test ratios, got {split_ratios}")
+    if np.any(ratios < 0) or ratios.sum() <= 0:
+        raise ValueError(f"split_ratios must be non-negative and non-zero, got {split_ratios}")
+    return ratios / ratios.sum()
+
+
+def _load_keyframe_indices(payload, path, total_frames):
+    raw_keyframes = payload.get("keyframe_indices", payload.get("keyframes"))
+    if raw_keyframes is None:
+        raise ValueError(f"Missing keyframe_indices in annotated keyframe JSON: {path}")
+
+    keyframes = []
+    for item in raw_keyframes:
+        if isinstance(item, dict):
+            item = item.get("frame_index", item.get("index"))
+        if item is None:
+            continue
+        keyframe = int(item)
+        if 0 <= keyframe < total_frames:
+            keyframes.append(keyframe)
+    return np.asarray(sorted(set(keyframes)), dtype=np.int64)
+
+
+def _load_annotated_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
+    path = Path(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    frames = payload.get("frames")
+    if not frames:
+        raise ValueError(f"Missing frames in annotated keyframe JSON: {path}")
+
+    data = []
+    for frame in frames:
+        blendshapes = frame.get("blendshapes")
+        if blendshapes is None:
+            raise ValueError(f"Missing blendshapes in frame for {path}")
+        data.append(blendshapes)
+
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim != 2 or data.shape[1] != 52:
+        raise ValueError(f"{path} must contain frames[].blendshapes with shape [T,52], got {data.shape}")
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    if clamp:
+        data = np.clip(data, clamp_min, clamp_max)
+
+    return data, _load_keyframe_indices(payload, path, len(data))
+
+
+def _resolve_keyframe_json(entry, data_path, root, data_dir, keyframe_dir=None):
+    data_path = Path(data_path)
+    if data_path.suffix.lower() == ".json":
+        return data_path
+
+    raw = entry.strip().replace("\\", "/")
+    rel = Path(raw)
+    candidates = []
+
+    if keyframe_dir:
+        keyframe_base = Path(keyframe_dir)
+        if not keyframe_base.is_absolute():
+            keyframe_base = root / keyframe_base
+        if rel.suffix:
+            candidates.append(keyframe_base / rel.with_suffix(".json"))
+        else:
+            candidates.append(keyframe_base / rel.with_suffix(".json"))
+        candidates.append(keyframe_base / f"{data_path.stem}.json")
+
+    candidates.append(data_path.with_suffix(".json"))
+    if rel.suffix:
+        candidates.append((root / rel).with_suffix(".json"))
+    else:
+        candidates.append((data_dir / rel).with_suffix(".json"))
+        candidates.append((root / rel).with_suffix(".json"))
+
+    seen = set()
+    unique_candidates = []
+    for candidate in candidates:
+        candidate = Path(candidate)
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique_candidates.append(candidate)
+
+    for candidate in unique_candidates:
+        if candidate.is_file():
+            return candidate
+
+    searched = ", ".join(str(path) for path in unique_candidates)
+    raise FileNotFoundError(f"Could not find annotated keyframe JSON for '{entry}'. Tried: {searched}")
+
+
+def _resolve_annotated_json_entry(entry, root, data_dir, keyframe_dir=None):
+    raw = entry.strip().replace("\\", "/")
+    rel = Path(raw)
+    candidates = []
+
+    if keyframe_dir:
+        keyframe_base = Path(keyframe_dir)
+        if not keyframe_base.is_absolute():
+            keyframe_base = root / keyframe_base
+        candidates.append(keyframe_base / rel.with_suffix(".json"))
+        candidates.append(keyframe_base / f"{rel.stem}.json")
+
+    candidates.append(data_dir / rel.with_suffix(".json"))
+    candidates.append(root / rel.with_suffix(".json"))
+
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_file():
+            return candidate
+
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Could not find annotated keyframe JSON for '{entry}'. Tried: {searched}")
+
+
+def _is_summary_json(path):
+    return Path(path).name.startswith("keyframe_summary")
 
 
 def sample_nearest_sequence_with_keyframes(data, start_idx, end_idx, keyframes, seq_len=12):
@@ -78,7 +213,7 @@ class Express4DConditionDataset(Dataset):
         dataset_config = config["dataset"]
         self.root = resolve_dataset_root(dataset_config["root"])
         self.data_dir = self.root / dataset_config.get("data_dir", "data")
-        list_name = dataset_config["train_list"] if split == "train" else dataset_config["test_list"]
+        list_name = dataset_config.get("train_list", "train.txt") if split == "train" else dataset_config.get("test_list", "test.txt")
         self.list_path = self.root / list_name
         self.fps = float(dataset_config.get("fps", 60))
         self.seq_len = int(dataset_config.get("seq_len", 12))
@@ -96,12 +231,10 @@ class Express4DConditionDataset(Dataset):
         self.clamp = bool(dataset_config.get("clamp", True))
         self.clamp_min = float(dataset_config.get("clamp_min", 0.0))
         self.clamp_max = float(dataset_config.get("clamp_max", 1.0))
-        keyframe_config = dataset_config.get("keyframe_detection", {})
-        self.keyframe_eps = float(keyframe_config.get("eps", 0.05))
-        self.keyframe_min_gap = int(keyframe_config.get("min_gap", 6))
-        self.keyframe_lam = float(keyframe_config.get("lam", 0.5))
-        self.keyframe_prominence_percentile = float(keyframe_config.get("prominence_percentile", 75))
-        self.keyframe_smooth = bool(keyframe_config.get("smooth", True))
+        self.keyframe_dir = dataset_config.get("keyframe_dir", None)
+        self.data_dirs = _as_list(dataset_config.get("data_dirs", None))
+        self.split_ratios = _as_ratio_pair(dataset_config.get("split_ratios", [0.8, 0.2]))
+        self.split_seed = int(dataset_config.get("split_seed", config.get("seed", 1)))
 
         missing_ratio_keys = set(self.condition_gaps) - set(self.condition_ratios)
         if missing_ratio_keys:
@@ -112,27 +245,29 @@ class Express4DConditionDataset(Dataset):
             raise ValueError("window_stride must be positive")
         if not self.root.is_dir():
             raise FileNotFoundError(f"Express4D root not found: {self.root}")
-        if not self.data_dir.is_dir():
-            raise FileNotFoundError(f"Express4D data directory not found: {self.data_dir}")
 
-        entries = _read_list(self.list_path)
+        entries = self._resolve_entries(split)
         self.sequences = []
         self.sequence_keyframes = []
         self.samples = []
         for entry in entries:
-            path = _resolve_entry(entry, self.root, self.data_dir, self.use_npy_first)
-            data = load_blendshape_file(path, self.clamp, self.clamp_min, self.clamp_max)
+            path = self._resolve_sequence_path(entry)
+            if path.suffix.lower() == ".json":
+                data, keyframes = _load_annotated_json(path, self.clamp, self.clamp_min, self.clamp_max)
+            else:
+                data = load_blendshape_file(path, self.clamp, self.clamp_min, self.clamp_max)
+                keyframe_path = _resolve_keyframe_json(
+                    entry,
+                    path,
+                    self.root,
+                    self.data_dir,
+                    keyframe_dir=self.keyframe_dir,
+                )
+                keyframe_payload = json.loads(keyframe_path.read_text(encoding="utf-8"))
+                keyframes = _load_keyframe_indices(keyframe_payload, keyframe_path, len(data))
             sequence_id = len(self.sequences)
-            keyframes, _ = detect_blendshape_keyframes(
-                data,
-                eps=self.keyframe_eps,
-                min_gap=self.keyframe_min_gap,
-                lam=self.keyframe_lam,
-                prominence_percentile=self.keyframe_prominence_percentile,
-                smooth=self.keyframe_smooth,
-            )
             self.sequences.append({"name": path.stem, "path": path, "data": data})
-            self.sequence_keyframes.append(np.asarray(keyframes, dtype=np.int64))
+            self.sequence_keyframes.append(keyframes)
             total_frames = data.shape[0]
             for condition, gap in sorted(self.condition_gaps.items()):
                 if total_frames <= gap:
@@ -150,6 +285,72 @@ class Express4DConditionDataset(Dataset):
         for index, sample in enumerate(self.samples):
             condition = sample[-1]
             self.condition_indices.setdefault(condition, []).append(index)
+
+    def _resolve_sequence_path(self, entry):
+        if isinstance(entry, Path):
+            return entry
+        try:
+            return _resolve_annotated_json_entry(
+                entry,
+                self.root,
+                self.data_dir,
+                keyframe_dir=self.keyframe_dir,
+            )
+        except FileNotFoundError:
+            return _resolve_entry(entry, self.root, self.data_dir, self.use_npy_first)
+
+    def _resolve_entries(self, split):
+        if self.list_path.is_file():
+            return _read_list(self.list_path)
+
+        json_paths = self._scan_annotated_jsons()
+        if not json_paths:
+            raise FileNotFoundError(
+                f"No split file found at {self.list_path}, and no annotated JSON files found under {self.root}"
+            )
+
+        indices = np.arange(len(json_paths), dtype=np.int64)
+        rng = np.random.default_rng(self.split_seed)
+        rng.shuffle(indices)
+        train_count = int(len(indices) * self.split_ratios[0])
+        if len(indices) < 2:
+            raise ValueError("Need at least two annotated JSON sequences to build train/test splits")
+        if train_count <= 0 or train_count >= len(indices):
+            raise ValueError(
+                f"split_ratios={self.split_ratios.tolist()} produce an empty train or test split"
+            )
+
+        selected = indices[:train_count] if split == "train" else indices[train_count:]
+        return [json_paths[int(index)] for index in selected]
+
+    def _scan_annotated_jsons(self):
+        candidate_dirs = []
+        for data_dir in self.data_dirs:
+            candidate = self.root / str(data_dir)
+            if candidate.is_dir():
+                candidate_dirs.append(candidate)
+
+        if not candidate_dirs:
+            if self.data_dir.is_dir():
+                candidate_dirs.append(self.data_dir)
+            elif (self.root / "express4d").is_dir():
+                express4d_dir = self.root / "express4d"
+                candidate_dirs.append(express4d_dir)
+            else:
+                candidate_dirs.append(self.root)
+
+        seen = set()
+        json_paths = []
+        for candidate_dir in candidate_dirs:
+            for path in sorted(candidate_dir.rglob("*.json")):
+                if _is_summary_json(path):
+                    continue
+                key = str(path.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                json_paths.append(path)
+        return json_paths
 
     def target_epoch_counts(self, base_condition=1):
         if base_condition not in self.condition_counts:

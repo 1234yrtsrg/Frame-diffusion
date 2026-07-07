@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CSDI_DIR = REPO_ROOT / "CSDI"
 sys.path.insert(0, str(CSDI_DIR))
 
-from dataset_express4d_condition import get_dataloader
+from dataset_keyframe_dataset_60fps import get_dataloader
 from main_model import CSDI_Express4D
 from utils import train
 
@@ -120,7 +120,9 @@ def load_training_checkpoint(model, checkpoint_path, fallback_global_step=0):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train CSDI Express4D with balanced condition windows")
+    parser = argparse.ArgumentParser(
+        description="Train CSDI Express4D condition model on annotated keyframe_dataset_60fps data"
+    )
     parser.add_argument("--config", type=str, default="CSDI/config/express4d_condition.yaml")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
@@ -134,6 +136,18 @@ def main():
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--max_train_steps", type=int, default=None)
     parser.add_argument("--save_interval_steps", type=int, default=None)
+    parser.add_argument(
+        "--dataset_root",
+        type=str,
+        default="dataset/keyframe_dataset_60fps",
+        help="Root containing annotated keyframe JSON subdirectories and split files.",
+    )
+    parser.add_argument(
+        "--data_dirs",
+        type=str,
+        default="express4d",
+        help="Comma-separated subdirectories under dataset_root. Default uses only express4d.",
+    )
     parser.add_argument("--data_parallel", action="store_true")
     args = parser.parse_args()
 
@@ -142,6 +156,16 @@ def main():
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
     config["seed"] = args.seed
+    config["dataset"]["root"] = args.dataset_root
+    config["dataset"]["data_dirs"] = [item.strip() for item in args.data_dirs.split(",") if item.strip()]
+    config["dataset"]["split_files"] = {
+        "express4d": {
+            "train": "express4d_train.txt",
+            "test": "express4d_test.txt",
+        }
+    }
+    config["dataset"]["random_split_data_dirs"] = []
+    config["dataset"]["write_split_files"] = False
 
     if args.batch_size is not None:
         if args.batch_size <= 0:
@@ -172,6 +196,7 @@ def main():
         num_workers=config["train"].get("num_workers", 0),
     )
     train_dataset = train_loader.dataset
+    print("train dataset counts:", dict(sorted(train_dataset.dataset_counts.items())))
     print("train condition counts:", dict(sorted(train_dataset.condition_counts.items())))
     print("target condition ratios:", dict(sorted(train_dataset.condition_ratios.items())))
     print("epoch target counts:", dict(sorted(train_loader.sampler.target_counts.items())))

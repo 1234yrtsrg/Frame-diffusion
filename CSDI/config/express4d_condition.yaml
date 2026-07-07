@@ -2,15 +2,12 @@ dataset:
   name: express4d_condition
   root: dataset/Express4D
   data_dir: data
+  data_dirs: [express4d]
   balance_base_condition: 1
-  keyframe_detection:
-    eps: 0.05
-    min_gap: 6
-    lam: 0.5
-    prominence_percentile: 75
-    smooth: true
-  train_list: train.txt
-  test_list: test.txt
+  train_list: express4d_train.txt
+  test_list: express4d_test.txt
+  split_seed: 1
+  split_ratios: [0.8, 0.2]
   fps: 60
   num_features: 52
   seq_len: 12

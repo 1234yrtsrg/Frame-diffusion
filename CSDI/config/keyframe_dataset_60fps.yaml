@@ -4,7 +4,16 @@ dataset:
   data_dirs: [dfew, express4d]
   balance_base_condition: 1
   split_seed: 1
-  split_ratios: [0.9, 0.1]
+  split_ratios: [0.8, 0.2]
+  split_files:
+    dfew:
+      train: dfew_train.txt
+      test: dfew_test.txt
+    express4d:
+      train: express4d_train.txt
+      test: express4d_test.txt
+  random_split_data_dirs: [dfew]
+  write_split_files: true
   fps: 60
   num_features: 52
   seq_len: 12

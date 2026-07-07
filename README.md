@@ -268,28 +268,27 @@ python sample_express4d.py \
 
 ## 测试集评估
 
-在 `dataset/Express4D/test.txt` 上评估 checkpoint：
+统一在 `keyframe_dataset_60fps` 的 test split 上评估三种训练方式的 checkpoint。
+评估按两阶段推理生成数据：先用 `condition=1` 补全两个关键帧之间的 10 帧，
+再用 `condition=3` 补全每个相邻粗帧区间里的 10 帧。
 
 ```shell
-python sample_express4d.py \
-  --config config/express4d.yaml \
-  --checkpoint CSDI/save/express4d_xxx/model.pth \
-  --eval_test
+python inference/evaluate_models.py \
+  --express4d_duration_checkpoint save/express4d_duration/model.pth \
+  --express4d_condition_checkpoint save/express4d_condition/model.pth \
+  --keyframe_dataset_60fps_checkpoint save/keyframe_dataset_60fps/model.pth
 ```
 
-评估指标包括：
+默认评估配置是 `CSDI/config/keyframe_dataset_60fps.yaml`。如需只评估某个子集，
+可以加 `--data_dirs express4d` 或 `--data_dirs dfew`。
 
-- middle L1
-- middle MSE
-- velocity L1
-- acceleration L1
-- endpoint continuity start
-- endpoint continuity end
+评估指标只包括：
 
-脚本也会输出 baseline：
-
-- linear interpolation
-- cubic interpolation。如果安装了 SciPy，会使用 SciPy cubic spline；否则使用 smoothstep fallback
+- PSNR
+- SSIM
+- MS-SSIM
+- MAE / L1
+- MSE / L2
 
 ## Smoke Test
 

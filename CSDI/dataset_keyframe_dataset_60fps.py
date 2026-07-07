@@ -62,6 +62,63 @@ def _as_list(value):
     return [value]
 
 
+def _read_split_list(path):
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Split file not found: {path}")
+    entries = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        entries.append(item)
+    if not entries:
+        raise ValueError(f"Split file is empty: {path}")
+    return entries
+
+
+def _entry_to_json_path(entry, dataset_dir):
+    raw = str(entry).strip().replace("\\", "/")
+    rel = Path(raw)
+    candidates = []
+    if rel.is_absolute():
+        candidates.append(rel)
+        if rel.suffix.lower() != ".json":
+            candidates.append(rel.with_suffix(".json"))
+    else:
+        candidates.append(dataset_dir / rel)
+        if rel.suffix.lower() != ".json":
+            candidates.append(dataset_dir / rel.with_suffix(".json"))
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Could not find JSON for split entry {entry!r}. Tried: {searched}")
+
+
+def _json_split_entry(path, dataset_dir):
+    rel = Path(path).relative_to(dataset_dir)
+    return rel.as_posix()
+
+
+def _load_keyframe_indices(payload, path, total_frames):
+    raw_keyframes = payload.get("keyframe_indices", payload.get("keyframes"))
+    if raw_keyframes is None:
+        raise ValueError(f"Missing keyframe_indices in keyframe JSON: {path}")
+
+    keyframes = []
+    for item in raw_keyframes:
+        if isinstance(item, dict):
+            item = item.get("frame_index", item.get("index"))
+        if item is None:
+            continue
+        keyframe = int(item)
+        if 0 <= keyframe < total_frames:
+            keyframes.append(keyframe)
+    return sorted(set(keyframes))
+
+
 def _load_keyframe_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
     path = Path(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -83,12 +140,11 @@ def _load_keyframe_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
     if data.shape[1] != 52:
         raise ValueError(f"{path} must contain 52 blendshape values per frame, got {data.shape}")
 
-    keyframes = payload.get("keyframe_indices", payload.get("keyframes", []))
-    keyframes = sorted({int(k) for k in keyframes if 0 <= int(k) < len(data)})
-
     data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
     if clamp:
         data = np.clip(data, clamp_min, clamp_max)
+
+    keyframes = _load_keyframe_indices(payload, path, len(data))
 
     dataset_name = str(payload.get("dataset", path.parent.name))
     video_id = str(payload.get("video_id", path.stem))
@@ -153,8 +209,11 @@ class KeyframeDataset60fps(Dataset):
             dataset_config.get("condition_ratios"),
             {1: 0.4, 2: 0.1, 3: 0.4, 4: 0.1},
         )
-        self.split_ratios = _as_ratio_pair(dataset_config.get("split_ratios", [0.9, 0.1]))
+        self.split_ratios = _as_ratio_pair(dataset_config.get("split_ratios", [0.8, 0.2]))
         self.split_seed = int(dataset_config.get("split_seed", config.get("seed", 1)))
+        self.split_files = dict(dataset_config.get("split_files", {}))
+        self.write_split_files = bool(dataset_config.get("write_split_files", True))
+        self.random_split_data_dirs = set(_as_list(dataset_config.get("random_split_data_dirs", ["dfew"])))
         self.clamp = bool(dataset_config.get("clamp", True))
         self.clamp_min = float(dataset_config.get("clamp_min", 0.0))
         self.clamp_max = float(dataset_config.get("clamp_max", 1.0))
@@ -174,8 +233,7 @@ class KeyframeDataset60fps(Dataset):
         if not self.root.is_dir():
             raise FileNotFoundError(f"Keyframe dataset root not found: {self.root}")
 
-        self.all_sequences = self._load_all_sequences()
-        self.sequences = self._split_sequences()
+        self.sequences = self._load_split_sequences()
         self.samples = self._build_samples()
 
         if not self.samples:
@@ -191,15 +249,14 @@ class KeyframeDataset60fps(Dataset):
             self.condition_indices.setdefault(condition, []).append(index)
         self.dataset_counts = Counter(sequence["dataset_name"] for sequence in self.sequences)
 
-    def _load_all_sequences(self):
+    def _load_split_sequences(self):
         sequences = []
         for data_dir in self.data_dirs:
             dir_path = self.root / data_dir
             if not dir_path.is_dir():
                 raise FileNotFoundError(f"Keyframe dataset directory not found: {dir_path}")
-            for path in sorted(dir_path.rglob("*.json")):
-                if path.name.startswith("keyframe_summary_"):
-                    continue
+
+            for path in self._split_json_paths(data_dir, dir_path):
                 sequence = _load_keyframe_json(
                     path,
                     clamp=self.clamp,
@@ -212,25 +269,67 @@ class KeyframeDataset60fps(Dataset):
             raise ValueError(f"No keyframe JSON sequences found under {self.root / self.data_dirs[0]}")
         return sequences
 
-    def _split_sequences(self):
-        indices = np.arange(len(self.all_sequences), dtype=np.int64)
+    def _all_json_paths(self, dataset_dir):
+        return [
+            path
+            for path in sorted(dataset_dir.rglob("*.json"))
+            if not path.name.startswith("keyframe_summary")
+        ]
+
+    def _split_file_paths(self, data_dir):
+        configured = self.split_files.get(data_dir, {})
+        train_name = configured.get("train", f"{data_dir}_train.txt")
+        test_name = configured.get("test", f"{data_dir}_test.txt")
+        return {
+            "train": self.root / train_name,
+            "test": self.root / test_name,
+        }
+
+    def _split_json_paths(self, data_dir, dataset_dir):
+        split_paths = self._split_file_paths(data_dir)
+        split_file = split_paths[self.split]
+        if split_file.is_file():
+            return [_entry_to_json_path(entry, dataset_dir) for entry in _read_split_list(split_file)]
+
+        all_paths = self._all_json_paths(dataset_dir)
+        if not all_paths:
+            raise ValueError(f"No keyframe JSON sequences found under {dataset_dir}")
+
+        if data_dir not in self.random_split_data_dirs:
+            raise FileNotFoundError(
+                f"Missing split file for {data_dir}: {split_file}. "
+                f"Expected explicit {data_dir}_train.txt/{data_dir}_test.txt."
+            )
+
+        split_map = self._build_random_split_paths(data_dir, dataset_dir, all_paths, split_paths)
+        return split_map[self.split]
+
+    def _build_random_split_paths(self, data_dir, dataset_dir, all_paths, split_paths):
+        indices = np.arange(len(all_paths), dtype=np.int64)
         rng = np.random.default_rng(self.split_seed)
         rng.shuffle(indices)
 
         train_count = int(len(indices) * self.split_ratios[0])
         if len(indices) < 2:
-            raise ValueError("Need at least two sequences to build train/test splits")
+            raise ValueError(f"Need at least two {data_dir} sequences to build train/test splits")
         if train_count <= 0 or train_count >= len(indices):
             raise ValueError(
                 f"split_ratios={self.split_ratios.tolist()} produce an empty train or test split"
             )
 
-        split_indices = {
-            "train": indices[:train_count],
-            "test": indices[train_count:],
+        split_map = {
+            "train": [all_paths[int(index)] for index in indices[:train_count]],
+            "test": [all_paths[int(index)] for index in indices[train_count:]],
         }
-        selected = split_indices[self.split]
-        return [self.all_sequences[int(index)] for index in selected]
+
+        if self.write_split_files:
+            for split_name, paths in split_map.items():
+                split_file = split_paths[split_name]
+                if not split_file.exists():
+                    lines = [_json_split_entry(path, dataset_dir) for path in paths]
+                    split_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return split_map
 
     def _build_samples(self):
         samples = []
