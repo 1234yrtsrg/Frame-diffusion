@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -469,6 +470,11 @@ def selected_sample_indices(dataset, coarse_condition, coarse_gap):
     return indices
 
 
+def progress_print(args, message):
+    if not args.quiet:
+        print(f"[shard {args.shard_index + 1}/{args.num_shards}] {message}", flush=True)
+
+
 def generated_middle(model, start, end, duration, condition, num_samples):
     if model.use_condition:
         output = model.generate_middle(
@@ -634,11 +640,19 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
     module = eval_context["module"]
     dataset = eval_context["dataset"]
     selected_indices = eval_context["selected_indices"]
+    total_batches = math.ceil(len(selected_indices) / args.batch_size)
+    if args.max_batches is not None:
+        total_batches = min(total_batches, args.max_batches)
+    progress_print(
+        args,
+        f"{method}: start {len(selected_indices)} windows, {total_batches} batches, checkpoint={checkpoint}",
+    )
 
     with torch.no_grad():
         for batch_idx, start_offset in enumerate(range(0, len(selected_indices), args.batch_size)):
             if args.max_batches is not None and batch_idx >= args.max_batches:
                 break
+            progress_print(args, f"{method}: batch {batch_idx + 1}/{total_batches}")
             batch_indices = selected_indices[start_offset : start_offset + args.batch_size]
             coarse_gt_items = []
             coarse_position_items = []
@@ -669,6 +683,7 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
                 pred_resampled = resample_sequence(fine_pred[item_index], target.shape[0])
                 accumulator.update(pred_resampled, target, known_mask)
 
+    progress_print(args, f"{method}: done")
     return {
         "checkpoint": str(resolve_path(checkpoint)),
         "model_config": str(resolve_path(config_path)),
@@ -696,10 +711,15 @@ def evaluate_linear_baseline(eval_context, args, device):
     module = eval_context["module"]
     dataset = eval_context["dataset"]
     selected_indices = eval_context["selected_indices"]
+    total_batches = math.ceil(len(selected_indices) / args.batch_size)
+    if args.max_batches is not None:
+        total_batches = min(total_batches, args.max_batches)
+    progress_print(args, f"linear_interpolation: start {len(selected_indices)} windows, {total_batches} batches")
 
     for batch_idx, start_offset in enumerate(range(0, len(selected_indices), args.batch_size)):
         if args.max_batches is not None and batch_idx >= args.max_batches:
             break
+        progress_print(args, f"linear_interpolation: batch {batch_idx + 1}/{total_batches}")
         batch_indices = selected_indices[start_offset : start_offset + args.batch_size]
         for sample_index in batch_indices:
             item = timeline_item(module, dataset, sample_index)
@@ -708,6 +728,7 @@ def evaluate_linear_baseline(eval_context, args, device):
             pred = linear_interpolate_known_frames(target, known_mask)
             accumulator.update(pred, target, known_mask)
 
+    progress_print(args, "linear_interpolation: done")
     return {
         "model_dataset": "linear_interpolation_baseline",
         "eval_dataset": eval_context["config"]["dataset"].get("name", EVAL_DATASET_METHOD),
@@ -771,6 +792,7 @@ def main():
     parser.add_argument("--output", default="outputs/model_eval/metrics.json")
     parser.add_argument("--dataset_root", default=None, help="Override keyframe_dataset_60fps dataset root.")
     parser.add_argument("--data_dirs", default=None, help="Override keyframe_dataset_60fps data_dirs, comma-separated.")
+    parser.add_argument("--quiet", action="store_true", help="Disable per-method and per-batch progress logs.")
     parser.add_argument(
         "--no_linear_baseline",
         action="store_true",

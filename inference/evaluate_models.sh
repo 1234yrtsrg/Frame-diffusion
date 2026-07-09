@@ -26,7 +26,7 @@ for shard_index in $(seq 0 $((NUM_GPUS - 1))); do
     --express4d_duration_checkpoint "${EXPRESS4D_DURATION_CHECKPOINT:-save/express4d_20260528_032120/checkpoint_step_50000.pth}" \
     --express4d_condition_checkpoint "${EXPRESS4D_CONDITION_CHECKPOINT:-save/express4d_condition/checkpoint_step_50000.pth}" \
     --keyframe_dataset_60fps_checkpoint "${KEYFRAME_DATASET_60FPS_CHECKPOINT:-save/keyframe_dataset_60fps/checkpoint_step_50000.pth}" \
-    --data_dirs "${DATA_DIRS:-express4d}" \
+    --data_dirs "${DATA_DIRS:-dfew,express4d}" \
     --batch_size "$PER_GPU_BATCH_SIZE" \
     --fine_segment_batch_size "$FINE_SEGMENT_BATCH_SIZE" \
     --device cuda:0 \
