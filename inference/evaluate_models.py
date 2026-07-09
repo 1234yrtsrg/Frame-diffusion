@@ -1,7 +1,6 @@
 import argparse
 import importlib
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -110,107 +109,224 @@ def apply_eval_dataset_overrides(config, args):
     return config
 
 
-def _global_ssim_parts(pred, target, data_range):
-    pred = pred.reshape(pred.shape[0], -1)
-    target = target.reshape(target.shape[0], -1)
-
-    c1 = (0.01 * data_range) ** 2
-    c2 = (0.03 * data_range) ** 2
-
-    mu_x = pred.mean(dim=1)
-    mu_y = target.mean(dim=1)
-    x_centered = pred - mu_x[:, None]
-    y_centered = target - mu_y[:, None]
-
-    sigma_x = (x_centered * x_centered).mean(dim=1)
-    sigma_y = (y_centered * y_centered).mean(dim=1)
-    sigma_xy = (x_centered * y_centered).mean(dim=1)
-
-    luminance = (2 * mu_x * mu_y + c1) / (mu_x * mu_x + mu_y * mu_y + c1)
-    contrast_structure = (2 * sigma_xy + c2) / (sigma_x + sigma_y + c2)
-    ssim = luminance * contrast_structure
-    return luminance.clamp_min(1e-6), contrast_structure.clamp_min(1e-6), ssim
-
-
-def ssim(pred, target, data_range):
-    _, _, values = _global_ssim_parts(pred, target, data_range)
-    return values.clamp(-1.0, 1.0)
-
-
-def ms_ssim(pred, target, data_range):
-    pred = pred.unsqueeze(1)
-    target = target.unsqueeze(1)
-    weights = torch.tensor(
-        [0.0448, 0.2856, 0.3001, 0.2363, 0.1333],
-        device=pred.device,
-        dtype=pred.dtype,
-    )
-
-    luminance_values = []
-    contrast_structure_values = []
-    while True:
-        luminance, contrast_structure, _ = _global_ssim_parts(pred, target, data_range)
-        luminance_values.append(luminance)
-        contrast_structure_values.append(contrast_structure)
-        if len(luminance_values) == len(weights) or min(pred.shape[-2:]) < 2:
-            break
-        pred = torch.nn.functional.avg_pool2d(pred, kernel_size=2, stride=2)
-        target = torch.nn.functional.avg_pool2d(target, kernel_size=2, stride=2)
-
-    scale_count = len(luminance_values)
-    scale_weights = weights[:scale_count]
-    scale_weights = scale_weights / scale_weights.sum()
-
-    score = luminance_values[-1].pow(scale_weights[-1])
-    for idx in range(scale_count - 1):
-        score = score * contrast_structure_values[idx].pow(scale_weights[idx])
-    return score.clamp(0.0, 1.0)
-
-
-class MetricAccumulator:
-    def __init__(self, data_range):
-        self.data_range = float(data_range)
-        self.abs_sum = 0.0
-        self.sq_sum = 0.0
-        self.count = 0
-        self.ssim_sum = 0.0
-        self.ms_ssim_sum = 0.0
+class TimelineMetricAccumulator:
+    def __init__(self, num_features=52, writeback_known_frames=True):
+        self.num_features = int(num_features)
+        self.writeback_known_frames = bool(writeback_known_frames)
         self.num_sequences = 0
+        self.num_frames = 0
+        self.num_non_keyframes = 0
+        self.num_known_frames = 0
 
-    def update(self, pred, target):
-        pred = pred.float()
+        self.timeline_abs_sum = 0.0
+        self.timeline_sq_sum = 0.0
+        self.timeline_count = 0
+
+        self.non_keyframe_abs_sum = 0.0
+        self.non_keyframe_sq_sum = 0.0
+        self.non_keyframe_count = 0
+        self.non_keyframe_feature_abs_sum = np.zeros(self.num_features, dtype=np.float64)
+        self.non_keyframe_feature_count = 0
+
+        self.velocity_abs_sum = 0.0
+        self.velocity_sq_sum = 0.0
+        self.velocity_count = 0
+
+        self.acceleration_abs_sum = 0.0
+        self.acceleration_sq_sum = 0.0
+        self.acceleration_count = 0
+
+        self.boundary_velocity_abs_sum = 0.0
+        self.boundary_velocity_sq_sum = 0.0
+        self.boundary_velocity_count = 0
+        self.num_boundary_velocity_intervals = 0
+
+        self.known_abs_before_writeback = 0.0
+        self.known_sq_before_writeback = 0.0
+        self.known_count = 0
+        self.known_abs_after_writeback = 0.0
+        self.known_sq_after_writeback = 0.0
+
+        self.endpoint_abs_before_writeback = 0.0
+        self.endpoint_sq_before_writeback = 0.0
+        self.endpoint_count = 0
+        self.endpoint_abs_after_writeback = 0.0
+        self.endpoint_sq_after_writeback = 0.0
+
+    @staticmethod
+    def _add_abs_sq(diff):
+        return torch.abs(diff).sum().item(), (diff * diff).sum().item(), diff.numel()
+
+    @staticmethod
+    def _mean(abs_sum, count):
+        return float(abs_sum / count) if count else None
+
+    @staticmethod
+    def _mse(sq_sum, count):
+        return float(sq_sum / count) if count else None
+
+    def update(self, pred_raw, target, known_mask):
+        pred_raw = pred_raw.float()
         target = target.float()
-        diff = pred - target
-        self.abs_sum += torch.abs(diff).sum().item()
-        self.sq_sum += (diff * diff).sum().item()
-        self.count += diff.numel()
+        known_mask = known_mask.to(device=pred_raw.device, dtype=torch.bool)
+        if pred_raw.shape != target.shape:
+            raise ValueError(f"pred/target shape mismatch: {tuple(pred_raw.shape)} vs {tuple(target.shape)}")
+        if known_mask.shape[0] != pred_raw.shape[0]:
+            raise ValueError(f"known_mask length mismatch: {known_mask.shape[0]} vs {pred_raw.shape[0]}")
 
-        self.ssim_sum += ssim(pred, target, self.data_range).sum().item()
-        self.ms_ssim_sum += ms_ssim(pred, target, self.data_range).sum().item()
-        self.num_sequences += pred.shape[0]
+        self.num_sequences += 1
+        self.num_frames += pred_raw.shape[0]
+        self.num_known_frames += int(known_mask.sum().item())
+
+        known_diff_before = pred_raw[known_mask] - target[known_mask]
+        if known_diff_before.numel() > 0:
+            abs_sum, sq_sum, count = self._add_abs_sq(known_diff_before)
+            self.known_abs_before_writeback += abs_sum
+            self.known_sq_before_writeback += sq_sum
+            self.known_count += count
+
+        endpoint_mask = torch.zeros_like(known_mask)
+        endpoint_mask[0] = True
+        endpoint_mask[-1] = True
+        endpoint_diff_before = pred_raw[endpoint_mask] - target[endpoint_mask]
+        abs_sum, sq_sum, count = self._add_abs_sq(endpoint_diff_before)
+        self.endpoint_abs_before_writeback += abs_sum
+        self.endpoint_sq_before_writeback += sq_sum
+        self.endpoint_count += count
+
+        pred = pred_raw.clone()
+        if self.writeback_known_frames:
+            pred[known_mask] = target[known_mask]
+
+        known_diff_after = pred[known_mask] - target[known_mask]
+        if known_diff_after.numel() > 0:
+            abs_sum, sq_sum, _ = self._add_abs_sq(known_diff_after)
+            self.known_abs_after_writeback += abs_sum
+            self.known_sq_after_writeback += sq_sum
+
+        endpoint_diff_after = pred[endpoint_mask] - target[endpoint_mask]
+        abs_sum, sq_sum, _ = self._add_abs_sq(endpoint_diff_after)
+        self.endpoint_abs_after_writeback += abs_sum
+        self.endpoint_sq_after_writeback += sq_sum
+
+        diff = pred - target
+        abs_sum, sq_sum, count = self._add_abs_sq(diff)
+        self.timeline_abs_sum += abs_sum
+        self.timeline_sq_sum += sq_sum
+        self.timeline_count += count
+
+        non_keyframe_mask = ~known_mask
+        self.num_non_keyframes += int(non_keyframe_mask.sum().item())
+        non_keyframe_diff = diff[non_keyframe_mask]
+        if non_keyframe_diff.numel() > 0:
+            abs_sum, sq_sum, count = self._add_abs_sq(non_keyframe_diff)
+            self.non_keyframe_abs_sum += abs_sum
+            self.non_keyframe_sq_sum += sq_sum
+            self.non_keyframe_count += count
+            self.non_keyframe_feature_abs_sum += torch.abs(non_keyframe_diff).sum(dim=0).cpu().numpy()
+            self.non_keyframe_feature_count += int(non_keyframe_diff.shape[0])
+
+        if pred.shape[0] >= 2:
+            pred_velocity = pred[1:] - pred[:-1]
+            target_velocity = target[1:] - target[:-1]
+            velocity_diff = pred_velocity - target_velocity
+            abs_sum, sq_sum, count = self._add_abs_sq(velocity_diff)
+            self.velocity_abs_sum += abs_sum
+            self.velocity_sq_sum += sq_sum
+            self.velocity_count += count
+
+            boundary_interval_mask = known_mask[1:] | known_mask[:-1]
+            boundary_velocity_diff = velocity_diff[boundary_interval_mask]
+            if boundary_velocity_diff.numel() > 0:
+                abs_sum, sq_sum, count = self._add_abs_sq(boundary_velocity_diff)
+                self.boundary_velocity_abs_sum += abs_sum
+                self.boundary_velocity_sq_sum += sq_sum
+                self.boundary_velocity_count += count
+                self.num_boundary_velocity_intervals += int(boundary_interval_mask.sum().item())
+
+        if pred.shape[0] >= 3:
+            pred_acceleration = pred[2:] - 2.0 * pred[1:-1] + pred[:-2]
+            target_acceleration = target[2:] - 2.0 * target[1:-1] + target[:-2]
+            acceleration_diff = pred_acceleration - target_acceleration
+            abs_sum, sq_sum, count = self._add_abs_sq(acceleration_diff)
+            self.acceleration_abs_sum += abs_sum
+            self.acceleration_sq_sum += sq_sum
+            self.acceleration_count += count
 
     def compute(self):
-        if self.count == 0 or self.num_sequences == 0:
+        if self.timeline_count == 0 or self.num_sequences == 0:
             raise ValueError("No samples were evaluated")
 
-        mae = self.abs_sum / self.count
-        mse = self.sq_sum / self.count
-        psnr = math.inf if mse == 0 else 20.0 * math.log10(self.data_range) - 10.0 * math.log10(mse)
+        per_feature = None
+        if self.non_keyframe_feature_count:
+            per_feature = (
+                self.non_keyframe_feature_abs_sum / float(self.non_keyframe_feature_count)
+            ).astype(float).tolist()
+
         return {
-            "psnr": float(psnr),
-            "ssim": float(self.ssim_sum / self.num_sequences),
-            "ms_ssim": float(self.ms_ssim_sum / self.num_sequences),
-            "mae_l1": float(mae),
-            "mse_l2": float(mse),
+            "timeline_resampled_mae_l1": self._mean(self.timeline_abs_sum, self.timeline_count),
+            "timeline_resampled_mse_l2": self._mse(self.timeline_sq_sum, self.timeline_count),
+            "non_keyframe_mae_l1": self._mean(self.non_keyframe_abs_sum, self.non_keyframe_count),
+            "non_keyframe_mse_l2": self._mse(self.non_keyframe_sq_sum, self.non_keyframe_count),
+            "timeline_resampled_velocity_mae": self._mean(self.velocity_abs_sum, self.velocity_count),
+            "timeline_resampled_velocity_mse": self._mse(self.velocity_sq_sum, self.velocity_count),
+            "timeline_resampled_acceleration_mae": self._mean(
+                self.acceleration_abs_sum,
+                self.acceleration_count,
+            ),
+            "timeline_resampled_acceleration_mse": self._mse(
+                self.acceleration_sq_sum,
+                self.acceleration_count,
+            ),
+            "boundary_velocity_mae": self._mean(
+                self.boundary_velocity_abs_sum,
+                self.boundary_velocity_count,
+            ),
+            "boundary_velocity_mse": self._mse(
+                self.boundary_velocity_sq_sum,
+                self.boundary_velocity_count,
+            ),
+            "per_feature_non_keyframe_mae": per_feature,
+            "known_frame_mae_before_writeback": self._mean(
+                self.known_abs_before_writeback,
+                self.known_count,
+            ),
+            "known_frame_mse_before_writeback": self._mse(
+                self.known_sq_before_writeback,
+                self.known_count,
+            ),
+            "known_frame_mae_after_writeback": self._mean(
+                self.known_abs_after_writeback,
+                self.known_count,
+            ),
+            "known_frame_mse_after_writeback": self._mse(
+                self.known_sq_after_writeback,
+                self.known_count,
+            ),
+            "endpoint_mae_before_writeback": self._mean(
+                self.endpoint_abs_before_writeback,
+                self.endpoint_count,
+            ),
+            "endpoint_mse_before_writeback": self._mse(
+                self.endpoint_sq_before_writeback,
+                self.endpoint_count,
+            ),
+            "endpoint_mae_after_writeback": self._mean(
+                self.endpoint_abs_after_writeback,
+                self.endpoint_count,
+            ),
+            "endpoint_mse_after_writeback": self._mse(
+                self.endpoint_sq_after_writeback,
+                self.endpoint_count,
+            ),
+            "counts": {
+                "num_sequences": int(self.num_sequences),
+                "num_frames": int(self.num_frames),
+                "num_non_keyframes": int(self.num_non_keyframes),
+                "num_known_frames": int(self.num_known_frames),
+                "num_boundary_velocity_intervals": int(self.num_boundary_velocity_intervals),
+            },
         }
-
-
-def default_data_range(config):
-    dataset_config = config.get("dataset", {})
-    clamp_min = float(dataset_config.get("clamp_min", 0.0))
-    clamp_max = float(dataset_config.get("clamp_max", 1.0))
-    value = clamp_max - clamp_min
-    return value if value > 0 else 1.0
 
 
 def condition_gap(config, condition, override=None):
@@ -241,6 +357,54 @@ def keyframes_for_sequence(dataset, sequence_id, sequence):
     return sequence.get("keyframes")
 
 
+def known_frame_mask(keyframes, start_idx, end_idx):
+    length = int(end_idx) - int(start_idx) + 1
+    if length <= 0:
+        raise ValueError(f"Invalid frame interval: start={start_idx}, end={end_idx}")
+    mask = np.zeros(length, dtype=bool)
+    mask[0] = True
+    mask[-1] = True
+    if keyframes is not None:
+        for keyframe in keyframes:
+            keyframe = int(keyframe)
+            if int(start_idx) <= keyframe <= int(end_idx):
+                mask[keyframe - int(start_idx)] = True
+    return mask
+
+
+def resample_sequence(sequence, target_len):
+    sequence = sequence.float()
+    target_len = int(target_len)
+    if target_len <= 0:
+        raise ValueError(f"target_len must be positive, got {target_len}")
+    if sequence.shape[0] == target_len:
+        return sequence.clone()
+    if sequence.shape[0] == 1:
+        return sequence.expand(target_len, -1).clone()
+    return torch.nn.functional.interpolate(
+        sequence.T.unsqueeze(0),
+        size=target_len,
+        mode="linear",
+        align_corners=True,
+    ).squeeze(0).T
+
+
+def timeline_item(module, dataset, sample_index):
+    data, keyframes, coarse_gt_np, coarse_positions_np, start_idx, end_idx = sample_coarse_ground_truth(
+        module,
+        dataset,
+        sample_index,
+    )
+    return {
+        "coarse_gt": coarse_gt_np,
+        "coarse_positions": coarse_positions_np,
+        "target": data[start_idx : end_idx + 1].astype(np.float32, copy=False),
+        "known_mask": known_frame_mask(keyframes, start_idx, end_idx),
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+    }
+
+
 def sample_coarse_ground_truth(module, dataset, sample_index):
     sequence_id, start_idx, end_idx, _, _ = sample_tuple_parts(dataset.samples[sample_index])
     sequence = dataset.sequences[sequence_id]
@@ -259,7 +423,14 @@ def sample_coarse_ground_truth(module, dataset, sample_index):
             keyframes,
             seq_len=seq_len,
         )
-    return data, keyframes, sequence_gt.astype(np.float32), positions.astype(np.float32)
+    return (
+        data,
+        keyframes,
+        sequence_gt.astype(np.float32),
+        positions.astype(np.float32),
+        int(start_idx),
+        int(end_idx),
+    )
 
 
 def sample_fine_ground_truth(module, data, keyframes, coarse_positions, seq_len=12):
@@ -383,6 +554,28 @@ def two_stage_predict(
     return stitch_segments(fine_segments)
 
 
+def linear_interpolate_known_frames(target, known_mask):
+    target = target.float()
+    known_mask = known_mask.to(device=target.device, dtype=torch.bool)
+    known_indices = torch.nonzero(known_mask, as_tuple=False).flatten()
+    if known_indices.numel() < 2:
+        raise ValueError("Linear interpolation baseline requires at least two known frames")
+
+    pred = torch.empty_like(target)
+    for pair_index in range(known_indices.numel() - 1):
+        start_idx = int(known_indices[pair_index].item())
+        end_idx = int(known_indices[pair_index + 1].item())
+        span = end_idx - start_idx
+        if span <= 0:
+            continue
+        alpha = torch.linspace(0.0, 1.0, span + 1, device=target.device, dtype=target.dtype).unsqueeze(1)
+        start = target[start_idx].unsqueeze(0)
+        end = target[end_idx].unsqueeze(0)
+        segment = start * (1.0 - alpha) + end * alpha
+        pred[start_idx : end_idx + 1] = segment
+    return pred
+
+
 def build_eval_context(args):
     config = apply_eval_dataset_overrides(load_config(args.eval_config), args)
     config["seed"] = args.seed
@@ -398,6 +591,16 @@ def build_eval_context(args):
     fine_condition = int(args.fine_condition)
     coarse_gap = condition_gap(config, coarse_condition, args.coarse_gap)
     selected_indices = selected_sample_indices(dataset, coarse_condition, coarse_gap)
+    if args.num_shards <= 0:
+        raise ValueError("--num_shards must be positive")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard_index must satisfy 0 <= shard_index < num_shards")
+    total_selected_windows = len(selected_indices)
+    selected_indices = selected_indices[args.shard_index :: args.num_shards]
+    if not selected_indices:
+        raise ValueError(
+            f"No evaluation samples assigned to shard {args.shard_index}/{args.num_shards}"
+        )
     return {
         "config": config,
         "module": module,
@@ -406,6 +609,7 @@ def build_eval_context(args):
         "fine_condition": fine_condition,
         "coarse_gap": coarse_gap,
         "selected_indices": selected_indices,
+        "total_selected_windows": total_selected_windows,
         "fps": float(config.get("dataset", {}).get("fps", 60)),
         "seq_len": int(config.get("dataset", {}).get("seq_len", 12)),
     }
@@ -415,10 +619,9 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
     model_config = load_config(config_path)
     model_config["seed"] = args.seed
     model = load_model(model_config, checkpoint, device)
-    accumulator = MetricAccumulator(
-        data_range=args.data_range
-        if args.data_range is not None
-        else default_data_range(eval_context["config"])
+    accumulator = TimelineMetricAccumulator(
+        num_features=model_config["dataset"].get("num_features", 52),
+        writeback_known_frames=True,
     )
     module = eval_context["module"]
     dataset = eval_context["dataset"]
@@ -431,27 +634,15 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
             batch_indices = selected_indices[start_offset : start_offset + args.batch_size]
             coarse_gt_items = []
             coarse_position_items = []
-            fine_gt_items = []
+            timeline_items = []
             for sample_index in batch_indices:
-                data, keyframes, coarse_gt_np, coarse_positions_np = sample_coarse_ground_truth(
-                    module,
-                    dataset,
-                    sample_index,
-                )
-                fine_gt_np = sample_fine_ground_truth(
-                    module,
-                    data,
-                    keyframes,
-                    coarse_positions_np,
-                    seq_len=eval_context["seq_len"],
-                )
-                coarse_gt_items.append(coarse_gt_np)
-                coarse_position_items.append(coarse_positions_np)
-                fine_gt_items.append(fine_gt_np)
+                item = timeline_item(module, dataset, sample_index)
+                coarse_gt_items.append(item["coarse_gt"])
+                coarse_position_items.append(item["coarse_positions"])
+                timeline_items.append(item)
 
             coarse_gt = torch.from_numpy(np.stack(coarse_gt_items, axis=0)).float()
             coarse_positions = torch.from_numpy(np.stack(coarse_position_items, axis=0)).float()
-            fine_gt = torch.from_numpy(np.stack(fine_gt_items, axis=0)).to(device).float()
             fine_pred = two_stage_predict(
                 model,
                 coarse_gt,
@@ -463,7 +654,11 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
                 device=device,
             )
 
-            accumulator.update(fine_pred[:, 1:-1], fine_gt[:, 1:-1])
+            for item_index, item in enumerate(timeline_items):
+                target = torch.from_numpy(item["target"]).to(device).float()
+                known_mask = torch.from_numpy(item["known_mask"]).to(device)
+                pred_resampled = resample_sequence(fine_pred[item_index], target.shape[0])
+                accumulator.update(pred_resampled, target, known_mask)
 
     return {
         "checkpoint": str(resolve_path(checkpoint)),
@@ -477,7 +672,45 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
         "fine_condition": eval_context["fine_condition"],
         "coarse_gap": eval_context["coarse_gap"],
         "num_selected_windows": len(selected_indices),
-        "refined_sequence_length": int((eval_context["seq_len"] - 1) ** 2 + 1),
+        "generated_sequence_length_before_timeline_resample": int((eval_context["seq_len"] - 1) ** 2 + 1),
+        "timeline_resampled_to_original_60fps": True,
+        "known_frames_written_back_before_metrics": True,
+        "metrics": accumulator.compute(),
+    }
+
+
+def evaluate_linear_baseline(eval_context, args, device):
+    accumulator = TimelineMetricAccumulator(
+        num_features=eval_context["config"]["dataset"].get("num_features", 52),
+        writeback_known_frames=True,
+    )
+    module = eval_context["module"]
+    dataset = eval_context["dataset"]
+    selected_indices = eval_context["selected_indices"]
+
+    for batch_idx, start_offset in enumerate(range(0, len(selected_indices), args.batch_size)):
+        if args.max_batches is not None and batch_idx >= args.max_batches:
+            break
+        batch_indices = selected_indices[start_offset : start_offset + args.batch_size]
+        for sample_index in batch_indices:
+            item = timeline_item(module, dataset, sample_index)
+            target = torch.from_numpy(item["target"]).to(device).float()
+            known_mask = torch.from_numpy(item["known_mask"]).to(device)
+            pred = linear_interpolate_known_frames(target, known_mask)
+            accumulator.update(pred, target, known_mask)
+
+    return {
+        "model_dataset": "linear_interpolation_baseline",
+        "eval_dataset": eval_context["config"]["dataset"].get("name", EVAL_DATASET_METHOD),
+        "eval_config": str(resolve_path(args.eval_config)),
+        "split": args.split,
+        "coarse_condition": eval_context["coarse_condition"],
+        "fine_condition": eval_context["fine_condition"],
+        "coarse_gap": eval_context["coarse_gap"],
+        "num_selected_windows": len(selected_indices),
+        "timeline_resampled_to_original_60fps": True,
+        "known_frames_used_for_piecewise_interpolation": True,
+        "known_frames_written_back_before_metrics": True,
         "metrics": accumulator.compute(),
     }
 
@@ -519,14 +752,20 @@ def main():
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--data_range", type=float, default=None)
     parser.add_argument("--coarse_condition", type=int, default=1)
     parser.add_argument("--fine_condition", type=int, default=3)
     parser.add_argument("--coarse_gap", type=int, default=None)
     parser.add_argument("--max_batches", type=int, default=None)
+    parser.add_argument("--num_shards", type=int, default=1)
+    parser.add_argument("--shard_index", type=int, default=0)
     parser.add_argument("--output", default="outputs/model_eval/metrics.json")
     parser.add_argument("--dataset_root", default=None, help="Override keyframe_dataset_60fps dataset root.")
     parser.add_argument("--data_dirs", default=None, help="Override keyframe_dataset_60fps data_dirs, comma-separated.")
+    parser.add_argument(
+        "--no_linear_baseline",
+        action="store_true",
+        help="Disable the piecewise linear interpolation baseline.",
+    )
     args = parser.parse_args()
 
     device = args.device
@@ -534,8 +773,9 @@ def main():
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     checkpoints = {key: value for key, value in checkpoint_args(args).items() if value}
-    if not checkpoints:
-        raise ValueError("Provide at least one *_checkpoint argument.")
+    include_linear_baseline = not args.no_linear_baseline
+    if not checkpoints and not include_linear_baseline:
+        raise ValueError("Provide at least one *_checkpoint argument or enable the linear baseline.")
 
     configs = config_args(args)
     eval_context = build_eval_context(args)
@@ -551,9 +791,20 @@ def main():
         "coarse_condition": eval_context["coarse_condition"],
         "fine_condition": eval_context["fine_condition"],
         "coarse_gap": eval_context["coarse_gap"],
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
+        "total_selected_windows": eval_context["total_selected_windows"],
         "num_selected_windows": len(eval_context["selected_indices"]),
+        "include_linear_baseline": include_linear_baseline,
         "methods": {},
     }
+
+    if include_linear_baseline:
+        payload["methods"]["linear_interpolation"] = evaluate_linear_baseline(
+            eval_context,
+            args,
+            device,
+        )
 
     for method, checkpoint in checkpoints.items():
         payload["methods"][method] = evaluate_checkpoint(
