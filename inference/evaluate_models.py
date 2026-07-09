@@ -507,6 +507,7 @@ def two_stage_predict(
     fine_condition,
     num_samples,
     device,
+    fine_segment_batch_size=None,
 ):
     batch_size = coarse_gt.shape[0]
     start = coarse_gt[:, 0].to(device)
@@ -539,14 +540,21 @@ def two_stage_predict(
         float(fine_condition),
         device=device,
     )
-    fine_middle = generated_middle(
-        model,
-        segment_start,
-        segment_end,
-        duration=interval_durations,
-        condition=fine_condition_tensor,
-        num_samples=num_samples,
-    )
+    fine_segment_batch_size = int(fine_segment_batch_size or segment_start.shape[0])
+    fine_middle_items = []
+    for start_offset in range(0, segment_start.shape[0], fine_segment_batch_size):
+        end_offset = start_offset + fine_segment_batch_size
+        fine_middle_items.append(
+            generated_middle(
+                model,
+                segment_start[start_offset:end_offset],
+                segment_end[start_offset:end_offset],
+                duration=interval_durations[start_offset:end_offset],
+                condition=fine_condition_tensor[start_offset:end_offset],
+                num_samples=num_samples,
+            )
+        )
+    fine_middle = torch.cat(fine_middle_items, dim=0)
     fine_segments = torch.cat(
         [segment_start[:, None], fine_middle, segment_end[:, None]],
         dim=1,
@@ -652,6 +660,7 @@ def evaluate_checkpoint(method, checkpoint, config_path, eval_context, args, dev
                 fine_condition=eval_context["fine_condition"],
                 num_samples=args.num_samples,
                 device=device,
+                fine_segment_batch_size=args.fine_segment_batch_size,
             )
 
             for item_index, item in enumerate(timeline_items):
@@ -756,6 +765,7 @@ def main():
     parser.add_argument("--fine_condition", type=int, default=3)
     parser.add_argument("--coarse_gap", type=int, default=None)
     parser.add_argument("--max_batches", type=int, default=None)
+    parser.add_argument("--fine_segment_batch_size", type=int, default=512)
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--shard_index", type=int, default=0)
     parser.add_argument("--output", default="outputs/model_eval/metrics.json")
@@ -786,6 +796,7 @@ def main():
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "max_batches": args.max_batches,
+        "fine_segment_batch_size": args.fine_segment_batch_size,
         "eval_dataset": eval_context["config"]["dataset"].get("name", EVAL_DATASET_METHOD),
         "eval_config": str(resolve_path(args.eval_config)),
         "coarse_condition": eval_context["coarse_condition"],

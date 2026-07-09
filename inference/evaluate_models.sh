@@ -3,6 +3,7 @@ set -e
 
 NUM_GPUS="${NUM_GPUS:-8}"
 PER_GPU_BATCH_SIZE="${PER_GPU_BATCH_SIZE:-128}"
+FINE_SEGMENT_BATCH_SIZE="${FINE_SEGMENT_BATCH_SIZE:-512}"
 CUDA_DEVICES="${CUDA_DEVICES:-0,1,2,3,4,5,6,7}"
 OUTPUT="${OUTPUT:-outputs/model_eval/metrics.json}"
 SHARD_DIR="${SHARD_DIR:-${OUTPUT%.json}_shards}"
@@ -14,18 +15,20 @@ if [ "${#GPU_IDS[@]}" -lt "$NUM_GPUS" ]; then
 fi
 
 mkdir -p "$SHARD_DIR"
+rm -f "$SHARD_DIR"/shard_*.json
 
 pids=()
 for shard_index in $(seq 0 $((NUM_GPUS - 1))); do
   gpu_id="${GPU_IDS[$shard_index]}"
   shard_output="$SHARD_DIR/shard_${shard_index}.json"
-  echo "Launching shard ${shard_index}/${NUM_GPUS} on GPU ${gpu_id} with batch_size=${PER_GPU_BATCH_SIZE}"
+  echo "Launching shard ${shard_index}/${NUM_GPUS} on GPU ${gpu_id} with batch_size=${PER_GPU_BATCH_SIZE}, fine_segment_batch_size=${FINE_SEGMENT_BATCH_SIZE}"
   CUDA_VISIBLE_DEVICES="$gpu_id" python inference/evaluate_models.py \
     --express4d_duration_checkpoint "${EXPRESS4D_DURATION_CHECKPOINT:-save/express4d_20260528_032120/checkpoint_step_50000.pth}" \
     --express4d_condition_checkpoint "${EXPRESS4D_CONDITION_CHECKPOINT:-save/express4d_condition/checkpoint_step_50000.pth}" \
     --keyframe_dataset_60fps_checkpoint "${KEYFRAME_DATASET_60FPS_CHECKPOINT:-save/keyframe_dataset_60fps/checkpoint_step_50000.pth}" \
     --data_dirs "${DATA_DIRS:-express4d}" \
     --batch_size "$PER_GPU_BATCH_SIZE" \
+    --fine_segment_batch_size "$FINE_SEGMENT_BATCH_SIZE" \
     --device cuda:0 \
     --num_shards "$NUM_GPUS" \
     --shard_index "$shard_index" \
