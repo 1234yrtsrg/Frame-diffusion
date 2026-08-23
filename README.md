@@ -23,19 +23,27 @@ diffusion imputation / generation 的目标。
 
 ```text
 CSDI/
-  config/express4d.yaml        Express4D 配置文件
-  dataset_express4d.py         Express4D 数据集和 61 维到 52 维映射
-  main_model.py                CSDI 主模型，包含 Express4D 专用模型类
-  train_express4d.py           训练入口
-  sample_express4d.py          推理和测试集评估入口
-  baseline_express4d.py        linear / cubic 插值 baseline
-  smoke_test_express4d.py      CPU smoke test
+  config/
+    express4d.yaml
+    express4d_condition.yaml
+    keyframe_dataset_60fps.yaml
+  dataset_express4d.py
+  dataset_express4d_condition.py
+  dataset_keyframe_dataset_60fps.py
+  diff_models.py
+  main_model.py                CSDI_base 公共扩散代码和 CSDI_Express4D
+  utils.py                     三条路线共用训练与 checkpoint 保存代码
 
-train_express4d.py             根目录训练 wrapper
-sample_express4d.py            根目录推理 wrapper
+train/
+  express4d_duration/
+  express4d_condition/
+  keyframe_dataset_60fps/
+
+inference/                     三条路线的推理和统一评测
+algorithm/                     关键帧标注代码
 ```
 
-官方 CSDI 原始说明保留在 `CSDI/README.md`。
+`baseline_express4d.py`、线性插值和两阶段推理仍作为推理/基线代码保留。
 
 ## 数据目录
 
@@ -191,53 +199,40 @@ lambda_range: 0.1
 
 ## 训练
 
-在仓库根目录运行：
+仓库只保留三条训练路线，均在仓库根目录运行。
+
+### express4d_duration
 
 ```shell
-python train_express4d.py --config config/express4d.yaml
+python train/express4d_duration/train_express4d.py \
+  --config CSDI/config/express4d.yaml
 ```
 
-默认配置会训练 `100` 个 epoch。也可以在命令行指定最大训练步数，达到这个
-optimizer step 数后会提前停止并保存 `model.pth`：
+### express4d_condition
 
 ```shell
-python train_express4d.py --config config/express4d.yaml --max_train_steps 100000
+python train/express4d_condition/train_express4d_condition.py \
+  --config CSDI/config/express4d_condition.yaml
 ```
 
-默认每 `50000` 个 optimizer steps 会额外保存一个中间模型：
-
-```text
-CSDI/save/express4d_xxx/checkpoint_step_50000.pth
-CSDI/save/express4d_xxx/checkpoint_step_100000.pth
-```
-
-保存间隔也可以在命令行修改：
+### keyframe_dataset_60fps
 
 ```shell
-python train_express4d.py --config config/express4d.yaml --save_interval_steps 25000
+python train/keyframe_dataset_60fps/train_keyframe_dataset_60fps.py \
+  --config CSDI/config/keyframe_dataset_60fps.yaml
 ```
 
-如果要用多张 GPU，可以使用 `--data_parallel`。例如使用 4 张可见 GPU：
+三条入口继续支持既有的 `--max_train_steps`、`--save_interval_steps`、
+`--device` 和 `--data_parallel` 等参数。对应目录中的 `.sh` 文件提供了
+多卡训练示例。训练仍保存最终 `model.pth`，并按配置保存
+`checkpoint_step_<step>.pth` 和 `training_state.pth`。
 
 ```shell
-CUDA_VISIBLE_DEVICES=0,1,2,3 python train_express4d.py \
-  --config config/express4d.yaml \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python train/express4d_duration/train_express4d.py \
+  --config CSDI/config/express4d.yaml \
   --device cuda:0 \
   --max_train_steps 100000 \
   --data_parallel
-```
-
-也可以进入 `CSDI/` 后运行：
-
-```shell
-cd CSDI
-python train_express4d.py --config config/express4d.yaml
-```
-
-checkpoint 会保存到：
-
-```text
-CSDI/save/express4d_*/
 ```
 
 ## 推理
@@ -245,9 +240,9 @@ CSDI/save/express4d_*/
 给定起始帧和结束帧，生成中间 10 帧：
 
 ```shell
-python sample_express4d.py \
-  --config config/express4d.yaml \
-  --checkpoint CSDI/save/express4d_xxx/model.pth \
+python inference/sample_express4d.py \
+  --config CSDI/config/express4d.yaml \
+  --checkpoint save/express4d_xxx/model.pth \
   --input_start path/to/start.npy \
   --input_end path/to/end.npy \
   --duration 1.0 \
@@ -295,8 +290,7 @@ python inference/evaluate_models.py \
 安装依赖后运行：
 
 ```shell
-cd CSDI
-python smoke_test_express4d.py
+python CSDI/smoke_test_express4d.py
 ```
 
 smoke test 会临时创建一个 Express4D 风格数据目录，并检查：
@@ -326,60 +320,3 @@ diffusion:
 ```
 
 因此默认不需要使用 `linear_attention_transformer`。
-
-## 30 帧关键帧区间数据集训练
-
-`dataset/keyframe_segments_T30.npz` 用 `train/keyframe_segments_T30/train_keyframe_segments_T30.py` 训练。数据集按 `source_ids` 划分 train/valid/test，不按片段随机划分。
-
-PowerShell 单卡示例：
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES = "0"
-python train/keyframe_segments_T30/train_keyframe_segments_T30.py `
-  --config CSDI/config/keyframe_segments_T30.yaml `
-  --device cuda:0 `
-  --batch_size 512 `
-  --max_train_steps 50000 `
-  --save_interval_steps 10000
-```
-
-PowerShell 多卡示例：
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES = "0,1,2,3"
-python train/keyframe_segments_T30/train_keyframe_segments_T30.py `
-  --config CSDI/config/keyframe_segments_T30.yaml `
-  --device cuda:0 `
-  --batch_size 512 `
-  --max_train_steps 50000 `
-  --save_interval_steps 10000 `
-  --data_parallel
-```
-
-Bash 多卡示例：
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python train/keyframe_segments_T30/train_keyframe_segments_T30.py --config CSDI/config/keyframe_segments_T30.yaml --device cuda:0 --batch_size 2048 --max_train_steps 50000 --save_interval_steps 10000 --data_parallel
-```
-
-也可以用脚本，但卡号和训练步数仍然从命令行传入：
-
-```powershell
-.\train\keyframe_segments_T30\train_keyframe_segments_T30_single.ps1 `
-  -CudaVisibleDevices "0" `
-  -BatchSize 512 `
-  -MaxTrainSteps 50000 `
-  -SaveIntervalSteps 10000
-
-.\train\keyframe_segments_T30\train_keyframe_segments_T30_multi.ps1 `
-  -CudaVisibleDevices "0,1,2,3" `
-  -BatchSize 512 `
-  -MaxTrainSteps 50000 `
-  -SaveIntervalSteps 10000
-```
-
-推理 `data/blendshapes.json` 中选定的两个关键帧并补全中间 28 帧：
-
-```bash
-python inference/infer_keyframe_segments_T30.py --keyframes_json data/blendshapes.json --checkpoint save/keyframe_segments_T30/checkpoint_step_10000.pth
-```

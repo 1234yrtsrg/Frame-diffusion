@@ -1,0 +1,608 @@
+{
+  "metadata": {
+    "config": "CSDI/config/keyframe_dataset_60fps.yaml",
+    "dataset_root": "C:\\Users\\15208\\Desktop\\others\\VLA\\数据生成\\delivery\\keyframe_dataset_60fps",
+    "split": "train",
+    "seed": 1,
+    "seq_len": 12,
+    "window_stride": 5,
+    "condition_gaps": {
+      "1": 240,
+      "2": 120,
+      "3": 24,
+      "4": 12
+    },
+    "split_provenance": {
+      "DFEW": {
+        "method": "read_only_deterministic_in_memory_split",
+        "configured_path_missing": "C:\\Users\\15208\\Desktop\\others\\VLA\\数据生成\\delivery\\keyframe_dataset_60fps\\dfew_train.txt",
+        "split_seed": 1,
+        "split_ratios": [
+          0.8,
+          0.2
+        ],
+        "files_written": false
+      },
+      "Express4D": {
+        "method": "command_line_split_file_override",
+        "path": "dataset/train.txt",
+        "configured_path": "C:\\Users\\15208\\Desktop\\others\\VLA\\数据生成\\delivery\\keyframe_dataset_60fps\\express4d_train.txt"
+      }
+    },
+    "models_loaded": false,
+    "gpu_required": false,
+    "split_files_modified": false
+  },
+  "original_training_set": {
+    "scopes": {
+      "all": {
+        "total_samples": 853714,
+        "category_distribution": {
+          "only_endpoints": {
+            "count": 549250,
+            "percentage": 64.336534
+          },
+          "endpoints_with_all_internal": {
+            "count": 299662,
+            "percentage": 35.100982
+          },
+          "endpoints_with_partial_internal": {
+            "count": 4802,
+            "percentage": 0.562483
+          }
+        },
+        "original_internal_keyframes": {
+          "histogram": {
+            "0": 549250,
+            "1": 154817,
+            "2": 62008,
+            "3": 30639,
+            "4": 17575,
+            "5": 11891,
+            "6": 8431,
+            "7": 5726,
+            "8": 3879,
+            "9": 2703,
+            "10": 1993,
+            "10+": 4802
+          },
+          "mean": 0.855578,
+          "min": 0,
+          "max": 22
+        },
+        "sampled_internal_keyframes": {
+          "histogram": {
+            "0": 549250,
+            "1": 154817,
+            "2": 62008,
+            "3": 30639,
+            "4": 17575,
+            "5": 11891,
+            "6": 8431,
+            "7": 5726,
+            "8": 3879,
+            "9": 2703,
+            "10": 6795,
+            "10+": 0
+          },
+          "mean": 0.83691,
+          "min": 0,
+          "max": 10
+        },
+        "quality_checks": {
+          "sample_positions_not_strictly_increasing": 17598,
+          "sample_positions_with_duplicates": 0,
+          "internal_keyframes_over_10": 4802,
+          "internal_keyframes_not_fully_preserved": 4802
+        },
+        "by_condition_gap": [
+          {
+            "condition": 1,
+            "gap": 240,
+            "total_samples": 30961,
+            "categories": {
+              "only_endpoints": {
+                "count": 5053,
+                "percentage": 16.320532
+              },
+              "endpoints_with_all_internal": {
+                "count": 23076,
+                "percentage": 74.532476
+              },
+              "endpoints_with_partial_internal": {
+                "count": 2832,
+                "percentage": 9.146991
+              }
+            }
+          },
+          {
+            "condition": 2,
+            "gap": 120,
+            "total_samples": 123423,
+            "categories": {
+              "only_endpoints": {
+                "count": 35413,
+                "percentage": 28.692383
+              },
+              "endpoints_with_all_internal": {
+                "count": 86042,
+                "percentage": 69.7131
+              },
+              "endpoints_with_partial_internal": {
+                "count": 1968,
+                "percentage": 1.594516
+              }
+            }
+          },
+          {
+            "condition": 3,
+            "gap": 24,
+            "total_samples": 333968,
+            "categories": {
+              "only_endpoints": {
+                "count": 219016,
+                "percentage": 65.579936
+              },
+              "endpoints_with_all_internal": {
+                "count": 114950,
+                "percentage": 34.419465
+              },
+              "endpoints_with_partial_internal": {
+                "count": 2,
+                "percentage": 0.000599
+              }
+            }
+          },
+          {
+            "condition": 4,
+            "gap": 12,
+            "total_samples": 365362,
+            "categories": {
+              "only_endpoints": {
+                "count": 289768,
+                "percentage": 79.309835
+              },
+              "endpoints_with_all_internal": {
+                "count": 75594,
+                "percentage": 20.690165
+              },
+              "endpoints_with_partial_internal": {
+                "count": 0,
+                "percentage": 0.0
+              }
+            }
+          }
+        ]
+      },
+      "DFEW": {
+        "total_samples": 746035,
+        "category_distribution": {
+          "only_endpoints": {
+            "count": 488546,
+            "percentage": 65.485668
+          },
+          "endpoints_with_all_internal": {
+            "count": 253635,
+            "percentage": 33.997735
+          },
+          "endpoints_with_partial_internal": {
+            "count": 3854,
+            "percentage": 0.516598
+          }
+        },
+        "original_internal_keyframes": {
+          "histogram": {
+            "0": 488546,
+            "1": 135276,
+            "2": 52881,
+            "3": 24495,
+            "4": 13617,
+            "5": 9316,
+            "6": 6602,
+            "7": 4567,
+            "8": 3107,
+            "9": 2152,
+            "10": 1622,
+            "10+": 3854
+          },
+          "mean": 0.802698,
+          "min": 0,
+          "max": 22
+        },
+        "sampled_internal_keyframes": {
+          "histogram": {
+            "0": 488546,
+            "1": 135276,
+            "2": 52881,
+            "3": 24495,
+            "4": 13617,
+            "5": 9316,
+            "6": 6602,
+            "7": 4567,
+            "8": 3107,
+            "9": 2152,
+            "10": 5476,
+            "10+": 0
+          },
+          "mean": 0.785668,
+          "min": 0,
+          "max": 10
+        },
+        "quality_checks": {
+          "sample_positions_not_strictly_increasing": 13643,
+          "sample_positions_with_duplicates": 0,
+          "internal_keyframes_over_10": 3854,
+          "internal_keyframes_not_fully_preserved": 3854
+        },
+        "by_condition_gap": [
+          {
+            "condition": 1,
+            "gap": 240,
+            "total_samples": 23138,
+            "categories": {
+              "only_endpoints": {
+                "count": 4853,
+                "percentage": 20.974155
+              },
+              "endpoints_with_all_internal": {
+                "count": 16132,
+                "percentage": 69.720806
+              },
+              "endpoints_with_partial_internal": {
+                "count": 2153,
+                "percentage": 9.305039
+              }
+            }
+          },
+          {
+            "condition": 2,
+            "gap": 120,
+            "total_samples": 99711,
+            "categories": {
+              "only_endpoints": {
+                "count": 31837,
+                "percentage": 31.929276
+              },
+              "endpoints_with_all_internal": {
+                "count": 66175,
+                "percentage": 66.3668
+              },
+              "endpoints_with_partial_internal": {
+                "count": 1699,
+                "percentage": 1.703924
+              }
+            }
+          },
+          {
+            "condition": 3,
+            "gap": 24,
+            "total_samples": 296741,
+            "categories": {
+              "only_endpoints": {
+                "count": 193924,
+                "percentage": 65.351266
+              },
+              "endpoints_with_all_internal": {
+                "count": 102815,
+                "percentage": 34.64806
+              },
+              "endpoints_with_partial_internal": {
+                "count": 2,
+                "percentage": 0.000674
+              }
+            }
+          },
+          {
+            "condition": 4,
+            "gap": 12,
+            "total_samples": 326445,
+            "categories": {
+              "only_endpoints": {
+                "count": 257932,
+                "percentage": 79.012391
+              },
+              "endpoints_with_all_internal": {
+                "count": 68513,
+                "percentage": 20.987609
+              },
+              "endpoints_with_partial_internal": {
+                "count": 0,
+                "percentage": 0.0
+              }
+            }
+          }
+        ]
+      },
+      "Express4D": {
+        "total_samples": 107679,
+        "category_distribution": {
+          "only_endpoints": {
+            "count": 60704,
+            "percentage": 56.374966
+          },
+          "endpoints_with_all_internal": {
+            "count": 46027,
+            "percentage": 42.744639
+          },
+          "endpoints_with_partial_internal": {
+            "count": 948,
+            "percentage": 0.880395
+          }
+        },
+        "original_internal_keyframes": {
+          "histogram": {
+            "0": 60704,
+            "1": 19541,
+            "2": 9127,
+            "3": 6144,
+            "4": 3958,
+            "5": 2575,
+            "6": 1829,
+            "7": 1159,
+            "8": 772,
+            "9": 551,
+            "10": 371,
+            "10+": 948
+          },
+          "mean": 1.221947,
+          "min": 0,
+          "max": 22
+        },
+        "sampled_internal_keyframes": {
+          "histogram": {
+            "0": 60704,
+            "1": 19541,
+            "2": 9127,
+            "3": 6144,
+            "4": 3958,
+            "5": 2575,
+            "6": 1829,
+            "7": 1159,
+            "8": 772,
+            "9": 551,
+            "10": 1319,
+            "10+": 0
+          },
+          "mean": 1.191932,
+          "min": 0,
+          "max": 10
+        },
+        "quality_checks": {
+          "sample_positions_not_strictly_increasing": 3955,
+          "sample_positions_with_duplicates": 0,
+          "internal_keyframes_over_10": 948,
+          "internal_keyframes_not_fully_preserved": 948
+        },
+        "by_condition_gap": [
+          {
+            "condition": 1,
+            "gap": 240,
+            "total_samples": 7823,
+            "categories": {
+              "only_endpoints": {
+                "count": 200,
+                "percentage": 2.556564
+              },
+              "endpoints_with_all_internal": {
+                "count": 6944,
+                "percentage": 88.763901
+              },
+              "endpoints_with_partial_internal": {
+                "count": 679,
+                "percentage": 8.679535
+              }
+            }
+          },
+          {
+            "condition": 2,
+            "gap": 120,
+            "total_samples": 23712,
+            "categories": {
+              "only_endpoints": {
+                "count": 3576,
+                "percentage": 15.080972
+              },
+              "endpoints_with_all_internal": {
+                "count": 19867,
+                "percentage": 83.784582
+              },
+              "endpoints_with_partial_internal": {
+                "count": 269,
+                "percentage": 1.134447
+              }
+            }
+          },
+          {
+            "condition": 3,
+            "gap": 24,
+            "total_samples": 37227,
+            "categories": {
+              "only_endpoints": {
+                "count": 25092,
+                "percentage": 67.402692
+              },
+              "endpoints_with_all_internal": {
+                "count": 12135,
+                "percentage": 32.597308
+              },
+              "endpoints_with_partial_internal": {
+                "count": 0,
+                "percentage": 0.0
+              }
+            }
+          },
+          {
+            "condition": 4,
+            "gap": 12,
+            "total_samples": 38917,
+            "categories": {
+              "only_endpoints": {
+                "count": 31836,
+                "percentage": 81.804867
+              },
+              "endpoints_with_all_internal": {
+                "count": 7081,
+                "percentage": 18.195133
+              },
+              "endpoints_with_partial_internal": {
+                "count": 0,
+                "percentage": 0.0
+              }
+            }
+          }
+        ]
+      }
+    },
+    "condition_distribution": {
+      "1": {
+        "count": 30961,
+        "percentage": 3.626624
+      },
+      "2": {
+        "count": 123423,
+        "percentage": 14.457184
+      },
+      "3": {
+        "count": 333968,
+        "percentage": 39.119424
+      },
+      "4": {
+        "count": 365362,
+        "percentage": 42.796768
+      }
+    },
+    "data_source_distribution": {
+      "windows": {
+        "DFEW": {
+          "count": 746035,
+          "percentage": 87.386994
+        },
+        "Express4D": {
+          "count": 107679,
+          "percentage": 12.613006
+        }
+      },
+      "sequences": {
+        "DFEW": {
+          "count": 12504,
+          "percentage": 94.669897
+        },
+        "Express4D": {
+          "count": 704,
+          "percentage": 5.330103
+        }
+      }
+    }
+  },
+  "sampler_epoch": {
+    "seed": 1,
+    "epoch": 0,
+    "total_samples": 77402,
+    "target_counts": {
+      "1": 30961,
+      "2": 7740,
+      "3": 30961,
+      "4": 7740
+    },
+    "condition_distribution": {
+      "1": {
+        "count": 30961,
+        "percentage": 40.000258
+      },
+      "2": {
+        "count": 7740,
+        "percentage": 9.999742
+      },
+      "3": {
+        "count": 30961,
+        "percentage": 40.000258
+      },
+      "4": {
+        "count": 7740,
+        "percentage": 9.999742
+      }
+    },
+    "data_source_distribution": {
+      "DFEW": {
+        "count": 63730,
+        "percentage": 82.336374
+      },
+      "Express4D": {
+        "count": 13672,
+        "percentage": 17.663626
+      }
+    },
+    "within_data_source_condition_distribution": {
+      "DFEW": {
+        "1": {
+          "count": 23138,
+          "percentage": 36.306292
+        },
+        "2": {
+          "count": 6194,
+          "percentage": 9.719128
+        },
+        "3": {
+          "count": 27473,
+          "percentage": 43.108426
+        },
+        "4": {
+          "count": 6925,
+          "percentage": 10.866154
+        }
+      },
+      "Express4D": {
+        "1": {
+          "count": 7823,
+          "percentage": 57.219134
+        },
+        "2": {
+          "count": 1546,
+          "percentage": 11.307782
+        },
+        "3": {
+          "count": 3488,
+          "percentage": 25.511995
+        },
+        "4": {
+          "count": 815,
+          "percentage": 5.961088
+        }
+      }
+    }
+  },
+  "comparison": {
+    "original_data_source_window_distribution": {
+      "DFEW": {
+        "count": 746035,
+        "percentage": 87.386994
+      },
+      "Express4D": {
+        "count": 107679,
+        "percentage": 12.613006
+      }
+    },
+    "sampler_epoch_data_source_distribution": {
+      "DFEW": {
+        "count": 63730,
+        "percentage": 82.336374
+      },
+      "Express4D": {
+        "count": 13672,
+        "percentage": 17.663626
+      }
+    },
+    "sampler_minus_original_percentage_points": {
+      "DFEW": -5.05062,
+      "Express4D": 5.05062
+    },
+    "condition_balanced": true,
+    "data_source_explicitly_balanced": false,
+    "interpretation": "The sampler enforces configured condition ratios, but samples each condition bucket without a source quota; source proportions are therefore inherited from available windows.",
+    "recommended_data_source_sampling_ratio": {
+      "DFEW": 0.5,
+      "Express4D": 0.5
+    },
+    "recommendation": "Use hierarchical sampling: first apply condition_ratios, then sample data sources with an explicit 1:1 quota inside every condition bucket."
+  }
+}

@@ -1,89 +1,63 @@
-# CSDI
-This is the github repository for the NeurIPS 2021 paper "[CSDI: Conditional Score-based Diffusion Models for Probabilistic Time Series Imputation](https://arxiv.org/abs/2107.03502)".
+# Frame-diffusion CSDI 模块
 
-## Requirement
+本目录包含 Frame-diffusion 三条 Express4D 训练路线共享的条件扩散实现。模型基于
+[CSDI: Conditional Score-based Diffusion Models for Probabilistic Time Series Imputation](https://arxiv.org/abs/2107.03502)
+改造，用于 52 维 ARKit blendshape 关键帧插值。
 
-Please install the packages in requirements.txt
+## 保留的训练路线
 
-## Preparation
-### Download the healthcare dataset 
+| 路线 | 训练入口 | 配置 | 数据集模块 |
+| --- | --- | --- | --- |
+| `express4d_duration` | `train/express4d_duration/train_express4d.py` | `CSDI/config/express4d.yaml` | `CSDI/dataset_express4d.py` |
+| `express4d_condition` | `train/express4d_condition/train_express4d_condition.py` | `CSDI/config/express4d_condition.yaml` | `CSDI/dataset_keyframe_dataset_60fps.py` |
+| `keyframe_dataset_60fps` | `train/keyframe_dataset_60fps/train_keyframe_dataset_60fps.py` | `CSDI/config/keyframe_dataset_60fps.yaml` | `CSDI/dataset_keyframe_dataset_60fps.py` |
+
+`dataset_express4d_condition.py` 仍由统一评测按路线名动态加载，因此作为评测数据适配器保留。
+
+三条路线都使用 `CSDI_Express4D`。`CSDI_base` 只保留它继承调用的网络初始化、
+设备解析、时间/条件 side information、扩散输入拼接和反向采样公共代码。
+
+## 训练
+
+以下命令均从仓库根目录运行：
+
 ```shell
-python download.py physio
+python train/express4d_duration/train_express4d.py \
+  --config CSDI/config/express4d.yaml
+
+python train/express4d_condition/train_express4d_condition.py \
+  --config CSDI/config/express4d_condition.yaml
+
+python train/keyframe_dataset_60fps/train_keyframe_dataset_60fps.py \
+  --config CSDI/config/keyframe_dataset_60fps.yaml
 ```
-### Download the air quality dataset 
+
+各入口的完整参数可通过 `--help` 查看。对应训练目录也提供 Bash 脚本。
+
+## 推理与评测
+
+时长条件模型推理：
+
 ```shell
-python download.py pm25
+python inference/infer_keyframes_express4d.py \
+  --config CSDI/config/express4d.yaml \
+  --checkpoint path/to/checkpoint.pth
 ```
 
-### Download the elecricity dataset 
-Please put files in [GoogleDrive](https://drive.google.com/drive/folders/1krZQofLdeQrzunuKkLXy8L_kMzQrVFI_?usp=drive_link) to the "data" folder.
+条件模型推理使用 `inference/infer_blendshapes_condition.py`。三条路线统一评测：
 
-## Experiments 
-
-### training and imputation for the healthcare dataset
 ```shell
-python exe_physio.py --testmissingratio [missing ratio] --nsample [number of samples]
+python inference/evaluate_models.py \
+  --express4d_duration_checkpoint path/to/duration_checkpoint.pth \
+  --express4d_condition_checkpoint path/to/condition_checkpoint.pth \
+  --keyframe_dataset_60fps_checkpoint path/to/keyframe_checkpoint.pth
 ```
-
-### imputation for the healthcare dataset with pretrained model
-```shell
-python exe_physio.py --modelfolder pretrained --testmissingratio [missing ratio] --nsample [number of samples]
-```
-
-### training and imputation for the healthcare dataset
-```shell
-python exe_pm25.py --nsample [number of samples]
-```
-
-### training and forecasting for the electricity dataset
-```shell
-python exe_forecasting.py --datatype electricity --nsample [number of samples]
-```
-
-### Express4D blendshape interpolation
-Express4D uses CSDI as a conditional diffusion imputer. Each sample is a
-12-frame ARKit blendshape sequence with shape `[L,K] = [12,52]`; frame 0 and
-frame 11 are observed endpoint conditions, and frames 1-10 are generated.
-The model receives `duration` as an extra condition embedding.
-
-Expected server data layout:
-```text
-dataset/Express4D/train.txt
-dataset/Express4D/test.txt
-dataset/Express4D/data/
-```
-
-Train:
-```shell
-python train_express4d.py --config config/express4d.yaml
-```
-
-Sample from endpoint vectors:
-```shell
-python sample_express4d.py --config config/express4d.yaml --checkpoint path/to/checkpoint.pth --input_start path/to/start.npy --input_end path/to/end.npy --duration 1.0 --output output_middle.npy
-```
-
-Evaluate on the unified keyframe_dataset_60fps test split with the two-stage condition=1 -> condition=3 pipeline:
-```shell
-python inference/evaluate_models.py --express4d_duration_checkpoint path/to/checkpoint.pth
-```
-
-Smoke test:
-```shell
-python smoke_test_express4d.py
-```
-
-### Visualize results
-'visualize_examples.ipynb' is a notebook for visualizing results.
 
 ## Acknowledgements
 
-A part of the codes is based on [BRITS](https://github.com/caow13/BRITS) and [DiffWave](https://github.com/lmnt-com/diffwave)
+扩散网络实现基于原 CSDI 项目，并包含来自 DiffWave 的相关设计。使用本代码时请引用：
 
-## Citation
-If you use this code for your research, please cite our paper:
-
-```
+```bibtex
 @inproceedings{tashiro2021csdi,
   title={CSDI: Conditional Score-based Diffusion Models for Probabilistic Time Series Imputation},
   author={Tashiro, Yusuke and Song, Jiaming and Song, Yang and Ermon, Stefano},

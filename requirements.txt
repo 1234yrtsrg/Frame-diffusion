@@ -7,8 +7,7 @@ pyyaml
 tqdm
 matplotlib
 
-# Kept for compatibility with the original CSDI repository.
-wget
+# Optional diffusion backend when diffusion.is_linear is enabled.
 linear_attention_transformer
 
 # Optional: used by cubic_interpolation baseline when available.
