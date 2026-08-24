@@ -1,5 +1,6 @@
 from collections import Counter
 from pathlib import Path
+import hashlib
 import json
 import math
 
@@ -50,6 +51,61 @@ def _normalize_float_mapping(mapping, default):
     if total <= 0:
         raise ValueError("condition ratios must sum to a positive value")
     return {key: value / total for key, value in values.items()}
+
+
+def _normalize_source_ratios(mapping, default):
+    if mapping is None:
+        mapping = default
+    values = {str(key).strip().lower(): float(value) for key, value in mapping.items()}
+    total = sum(values.values())
+    if total <= 0 or any(value < 0 for value in values.values()):
+        raise ValueError("data_source_ratios must be non-negative and sum to a positive value")
+    return {key: value / total for key, value in values.items()}
+
+
+def _stable_hash_int(seed, *parts):
+    payload = "\x1f".join([str(int(seed)), *(str(part) for part in parts)])
+    return int.from_bytes(hashlib.sha256(payload.encode("utf-8")).digest()[:8], "big")
+
+
+def _deterministic_quotas(total, ratios):
+    """Largest-remainder allocation with stable key ordering for ties."""
+    ordered = sorted(ratios)
+    normalized_total = sum(float(ratios[key]) for key in ordered)
+    if total < 0 or normalized_total <= 0:
+        raise ValueError("quota total and ratios must be valid")
+    exact = {key: total * float(ratios[key]) / normalized_total for key in ordered}
+    quotas = {key: int(math.floor(exact[key])) for key in ordered}
+    remaining = int(total - sum(quotas.values()))
+    remainders = sorted(ordered, key=lambda key: (-(exact[key] - quotas[key]), key))
+    for key in remainders[:remaining]:
+        quotas[key] += 1
+    assert sum(quotas.values()) == total
+    return quotas
+
+
+MASK_MODES = ("none", "partial", "all")
+
+
+def _normalize_mask_ratios(mapping):
+    defaults = {
+        1: {"none": 0.40, "partial": 0.30, "all": 0.30},
+        2: {"none": 0.30, "partial": 0.35, "all": 0.35},
+        3: {"none": 0.00, "partial": 0.50, "all": 0.50},
+        4: {"none": 0.00, "partial": 0.50, "all": 0.50},
+    }
+    mapping = defaults if mapping is None else mapping
+    result = {}
+    for raw_condition, raw_ratios in mapping.items():
+        condition = int(raw_condition)
+        unknown = set(raw_ratios) - set(MASK_MODES)
+        if unknown:
+            raise ValueError(f"Unknown mask modes for condition {condition}: {sorted(unknown)}")
+        values = {mode: float(raw_ratios.get(mode, 0.0)) for mode in MASK_MODES}
+        if any(value < 0 for value in values.values()) or sum(values.values()) <= 0:
+            raise ValueError(f"Invalid mask ratios for condition {condition}: {values}")
+        result[condition] = values
+    return result
 
 
 def _as_list(value):
@@ -159,35 +215,132 @@ def _load_keyframe_json(path, clamp=True, clamp_min=0.0, clamp_max=1.0):
     }
 
 
-def sample_nearest_sequence_with_keyframes(data, start_idx, end_idx, keyframes, seq_len=12):
-    interval = float(end_idx - start_idx) / float(seq_len - 1)
-    base_positions = np.rint(start_idx + np.arange(seq_len, dtype=np.float32) * interval).astype(np.int64)
-    base_positions[0] = int(start_idx)
-    base_positions[-1] = int(end_idx)
-
-    positions = base_positions.copy()
-    keyframe_slots = np.zeros(seq_len, dtype=np.float32)
-    available_slots = set(range(1, seq_len - 1))
-    in_window_keyframes = [
-        int(keyframe)
-        for keyframe in keyframes
-        if int(start_idx) < int(keyframe) < int(end_idx)
-    ]
-
-    for keyframe in in_window_keyframes:
-        if not available_slots:
-            break
-        slot = min(
-            available_slots,
-            key=lambda candidate: (abs(int(base_positions[candidate]) - keyframe), candidate),
+def _farthest_temporal_subset(candidates, anchors, count):
+    candidates = sorted(set(int(value) for value in candidates))
+    selected = set(int(value) for value in anchors)
+    chosen = []
+    while candidates and len(chosen) < count:
+        candidate = min(
+            candidates,
+            key=lambda value: (-min(abs(value - anchor) for anchor in selected), value),
         )
-        positions[slot] = keyframe
-        keyframe_slots[slot] = 1.0
-        available_slots.remove(slot)
+        candidates.remove(candidate)
+        selected.add(candidate)
+        chosen.append(candidate)
+    return chosen
 
-    positions = np.clip(positions, 0, len(data) - 1).astype(np.int64)
-    sampled = data[positions].astype(np.float32, copy=False)
-    return sampled, positions.astype(np.float32), keyframe_slots
+
+def _uniform_positions_with_mandatory(start_idx, end_idx, seq_len, mandatory):
+    """Minimum squared-error match to a uniform grid while forcing real positions."""
+    mandatory = set(int(value) for value in mandatory)
+    ideal = np.linspace(start_idx, end_idx, seq_len, dtype=np.float64)
+    positions = np.arange(start_idx, end_idx + 1, dtype=np.int64)
+    costs = np.full(seq_len + 1, np.inf, dtype=np.float64)
+    costs[0] = 0.0
+    took = np.zeros((len(positions), seq_len + 1), dtype=bool)
+    for row, position in enumerate(positions):
+        take_costs = np.full_like(costs, np.inf)
+        take_costs[1:] = costs[:-1] + (float(position) - ideal) ** 2
+        if int(position) in mandatory:
+            next_costs = take_costs
+            took[row] = np.isfinite(take_costs)
+        else:
+            # Prefer taking the earlier real frame on exact-cost ties.
+            took[row] = take_costs <= costs
+            next_costs = np.minimum(take_costs, costs)
+        costs = next_costs
+    if not np.isfinite(costs[seq_len]):
+        raise ValueError("Could not place all mandatory frames on the uniform sample grid")
+    selected = []
+    count = seq_len
+    for row in range(len(positions) - 1, -1, -1):
+        if count > 0 and took[row, count]:
+            selected.append(int(positions[row]))
+            count -= 1
+    if count != 0:
+        raise AssertionError("Uniform frame-selection backtracking failed")
+    return np.asarray(selected[::-1], dtype=np.int64)
+
+
+def sample_nearest_sequence_with_keyframes(
+    data,
+    start_idx,
+    end_idx,
+    keyframes,
+    seq_len=12,
+    overflow_strategy="farthest_temporal_coverage",
+):
+    """Choose ``seq_len`` unique real frames while preserving selected keyframes."""
+    data = np.asarray(data)
+    start_idx = int(start_idx)
+    end_idx = int(end_idx)
+    seq_len = int(seq_len)
+    if data.ndim < 1:
+        raise ValueError("data must have a frame dimension")
+    if not (0 <= start_idx < end_idx < len(data)):
+        raise ValueError(f"Invalid window [{start_idx}, {end_idx}] for {len(data)} frames")
+    if seq_len < 2 or end_idx - start_idx + 1 < seq_len:
+        raise ValueError(
+            f"Window [{start_idx}, {end_idx}] cannot provide {seq_len} unique real frames"
+        )
+    if overflow_strategy != "farthest_temporal_coverage":
+        raise ValueError(f"Unsupported keyframe overflow strategy: {overflow_strategy}")
+
+    internal_keyframes = sorted(
+        set(int(value) for value in keyframes if start_idx < int(value) < end_idx)
+    )
+    capacity = seq_len - 2
+    if len(internal_keyframes) <= capacity:
+        retained_keyframes = internal_keyframes
+    else:
+        retained_keyframes = sorted(
+            _farthest_temporal_subset(
+                internal_keyframes,
+                anchors=(start_idx, end_idx),
+                count=capacity,
+            )
+        )
+
+    retained_set = set(retained_keyframes)
+    mandatory = {start_idx, end_idx, *retained_set}
+    sample_positions = _uniform_positions_with_mandatory(
+        start_idx, end_idx, seq_len, mandatory
+    )
+    keyframe_slots = np.asarray(
+        [1.0 if int(position) in retained_set else 0.0 for position in sample_positions],
+        dtype=np.float32,
+    )
+    sampled = data[sample_positions].astype(np.float32, copy=False)
+
+    assert len(sample_positions) == seq_len
+    assert sample_positions[0] == start_idx and sample_positions[-1] == end_idx
+    assert np.all((sample_positions >= start_idx) & (sample_positions <= end_idx))
+    assert np.all(np.diff(sample_positions) > 0)
+    assert np.array_equal(sampled, data[sample_positions].astype(np.float32, copy=False))
+    assert retained_set.issubset(set(sample_positions.tolist()))
+    return sampled, sample_positions, keyframe_slots
+
+
+def sample_timepoints(sample_positions, start_idx, end_idx):
+    sample_positions = np.asarray(sample_positions, dtype=np.float32)
+    start_idx = int(start_idx)
+    end_idx = int(end_idx)
+    if end_idx <= start_idx:
+        raise ValueError("end_idx must be greater than start_idx")
+    if sample_positions.ndim != 1 or len(sample_positions) < 2:
+        raise ValueError("sample_positions must be a one-dimensional sequence")
+    if sample_positions[0] != start_idx or sample_positions[-1] != end_idx:
+        raise ValueError("sample_positions must start at start_idx and end at end_idx")
+    if not np.all(np.diff(sample_positions) > 0):
+        raise ValueError("sample_positions must be strictly increasing")
+    timepoints = np.float32(11.0) * (sample_positions - np.float32(start_idx)) / np.float32(
+        end_idx - start_idx
+    )
+    timepoints = timepoints.astype(np.float32, copy=False)
+    timepoints[0] = np.float32(0.0)
+    timepoints[-1] = np.float32(11.0)
+    assert np.all(np.diff(timepoints) > 0)
+    return timepoints
 
 
 class KeyframeDataset60fps(Dataset):
@@ -208,6 +361,16 @@ class KeyframeDataset60fps(Dataset):
         self.condition_ratios = _normalize_float_mapping(
             dataset_config.get("condition_ratios"),
             {1: 0.4, 2: 0.1, 3: 0.4, 4: 0.1},
+        )
+        self.data_source_ratios = _normalize_source_ratios(
+            dataset_config.get("data_source_ratios"),
+            {"dfew": 0.8739, "express4d": 0.1261},
+        )
+        self.mask_seed = int(dataset_config.get("mask_seed", 1))
+        self.mask_ratios = _normalize_mask_ratios(dataset_config.get("mask_ratios"))
+        self.partial_visible_ratio = float(dataset_config.get("partial_visible_ratio", 0.5))
+        self.keyframe_overflow_strategy = str(
+            dataset_config.get("keyframe_overflow_strategy", "farthest_temporal_coverage")
         )
         self.split_ratios = _as_ratio_pair(dataset_config.get("split_ratios", [0.8, 0.2]))
         self.split_seed = int(dataset_config.get("split_seed", config.get("seed", 1)))
@@ -230,6 +393,14 @@ class KeyframeDataset60fps(Dataset):
             raise ValueError("KeyframeDataset60fps expects seq_len == num_middle + 2")
         if self.window_stride <= 0:
             raise ValueError("window_stride must be positive")
+        if not 0.0 < self.partial_visible_ratio < 1.0:
+            raise ValueError("partial_visible_ratio must be strictly between 0 and 1")
+        if set(self.condition_gaps) - set(self.mask_ratios):
+            raise ValueError("mask_ratios must define every configured condition")
+        if set(self.data_dirs) != set(self.data_source_ratios):
+            raise ValueError(
+                "data_source_ratios keys must exactly match data_dirs after lowercase normalization"
+            )
         if not self.root.is_dir():
             raise FileNotFoundError(f"Keyframe dataset root not found: {self.root}")
 
@@ -244,10 +415,16 @@ class KeyframeDataset60fps(Dataset):
 
         self.condition_counts = Counter(sample[-1] for sample in self.samples)
         self.condition_indices = {}
+        self.condition_source_indices = {}
         for index, sample in enumerate(self.samples):
             condition = sample[-1]
             self.condition_indices.setdefault(condition, []).append(index)
+            sequence = self.sequences[sample[0]]
+            key = (condition, sequence["data_source"])
+            self.condition_source_indices.setdefault(key, []).append(index)
         self.dataset_counts = Counter(sequence["dataset_name"] for sequence in self.sequences)
+        self.data_source_counts = Counter(sequence["data_source"] for sequence in self.sequences)
+        self.mask_modes = self._assign_mask_modes()
 
     def _load_split_sequences(self):
         sequences = []
@@ -263,6 +440,7 @@ class KeyframeDataset60fps(Dataset):
                     clamp_min=self.clamp_min,
                     clamp_max=self.clamp_max,
                 )
+                sequence["data_source"] = str(data_dir).strip().lower()
                 sequences.append(sequence)
 
         if not sequences:
@@ -360,11 +538,104 @@ class KeyframeDataset60fps(Dataset):
         targets[base_condition] = base_count
         return targets
 
+    def stable_sample_id(self, index):
+        sequence_id, start_idx, end_idx, _, condition = self.samples[index]
+        sequence = self.sequences[sequence_id]
+        return "|".join(
+            (
+                sequence["data_source"],
+                sequence["sequence_name"],
+                str(int(start_idx)),
+                str(int(end_idx)),
+                str(int(condition)),
+            )
+        )
+
+    def sample_sampling_metadata(self, index):
+        sequence_id, _, _, _, condition = self.samples[index]
+        return int(condition), self.sequences[sequence_id]["data_source"], self.mask_modes[index]
+
+    def _internal_keyframe_count(self, index):
+        sequence_id, start_idx, end_idx, _, _ = self.samples[index]
+        keyframes = self.sequences[sequence_id]["keyframes"]
+        return min(
+            self.seq_len - 2,
+            len(set(int(value) for value in keyframes if start_idx < int(value) < end_idx)),
+        )
+
+    def _assign_mask_modes(self):
+        modes = [None] * len(self.samples)
+        grouped = {}
+        for index, sample in enumerate(self.samples):
+            condition = int(sample[-1])
+            source = self.sequences[sample[0]]["data_source"]
+            keyframe_count = self._internal_keyframe_count(index)
+            if keyframe_count == 0:
+                modes[index] = "none"
+                continue
+            legal = ("none", "all") if keyframe_count == 1 else MASK_MODES
+            grouped.setdefault((condition, source, legal), []).append(index)
+
+        for (condition, source, legal), indices in sorted(grouped.items()):
+            ratios = {mode: self.mask_ratios[condition][mode] for mode in legal}
+            if sum(ratios.values()) <= 0:
+                raise ValueError(
+                    f"No positive legal mask ratio for condition={condition}, source={source}, modes={legal}"
+                )
+            quotas = _deterministic_quotas(len(indices), ratios)
+            ordered = sorted(
+                indices,
+                key=lambda index: (
+                    _stable_hash_int(self.mask_seed, "mask-mode", self.stable_sample_id(index)),
+                    self.stable_sample_id(index),
+                ),
+            )
+            offset = 0
+            for mode in legal:
+                next_offset = offset + quotas[mode]
+                for index in ordered[offset:next_offset]:
+                    modes[index] = mode
+                offset = next_offset
+
+        assert all(mode in MASK_MODES for mode in modes)
+        return modes
+
+    def _visible_keyframe_slots(self, index, keyframe_slots, sample_positions):
+        mode = self.mask_modes[index]
+        slots = np.flatnonzero(np.asarray(keyframe_slots) > 0)
+        if mode == "none":
+            return np.empty((0,), dtype=np.int64)
+        if mode == "all":
+            return slots.astype(np.int64, copy=False)
+        if len(slots) < 2:
+            raise AssertionError("partial mode requires at least two internal keyframes")
+        visible_count = int(math.floor(len(slots) * self.partial_visible_ratio + 0.5))
+        visible_count = min(len(slots) - 1, max(1, visible_count))
+        sample_id = self.stable_sample_id(index)
+        ranked = sorted(
+            slots.tolist(),
+            key=lambda slot: (
+                _stable_hash_int(
+                    self.mask_seed,
+                    "partial-visible",
+                    sample_id,
+                    int(sample_positions[slot]),
+                ),
+                int(sample_positions[slot]),
+            ),
+        )
+        return np.asarray(sorted(ranked[:visible_count]), dtype=np.int64)
+
     def __getitem__(self, index):
         sequence_id, start_idx, end_idx, gap, condition = self.samples[index]
         sequence = self.sequences[sequence_id]
         seq, sample_positions, keyframe_slots = sample_nearest_sequence_with_keyframes(
-            sequence["data"], start_idx, end_idx, sequence["keyframes"], self.seq_len
+            sequence["data"],
+            start_idx,
+            end_idx,
+            sequence["keyframes"],
+            self.seq_len,
+            overflow_strategy=self.keyframe_overflow_strategy,
         )
 
         observed_mask = np.zeros_like(seq, dtype=np.float32)
@@ -373,9 +644,13 @@ class KeyframeDataset60fps(Dataset):
 
         keyframe_mask = np.zeros_like(seq, dtype=np.float32)
         keyframe_mask[keyframe_slots.astype(bool)] = 1.0
-        observed_mask[keyframe_slots.astype(bool)] = 1.0
+        visible_keyframe_mask = np.zeros_like(seq, dtype=np.float32)
+        visible_slots = self._visible_keyframe_slots(index, keyframe_slots, sample_positions)
+        visible_keyframe_mask[visible_slots] = 1.0
+        observed_mask[visible_slots] = 1.0
 
         target_mask = 1.0 - observed_mask
+        timepoints = sample_timepoints(sample_positions, start_idx, end_idx)
 
         return {
             "observed_data": seq,
@@ -383,11 +658,14 @@ class KeyframeDataset60fps(Dataset):
             "observed_mask": observed_mask,
             "gt_mask": target_mask,
             "target_mask": target_mask,
-            "timepoints": np.arange(self.seq_len, dtype=np.float32),
+            "timepoints": timepoints,
             "condition": np.float32(condition),
             "duration": np.float32(gap / self.fps),
             "keyframe_mask": keyframe_mask,
-            "sample_positions": sample_positions.astype(np.float32),
+            "visible_keyframe_mask": visible_keyframe_mask,
+            "sample_positions": sample_positions,
+            "mask_mode": self.mask_modes[index],
+            "data_source": sequence["data_source"],
             "start": seq[0],
             "end": seq[-1],
             "middle": seq[1:-1],
@@ -404,16 +682,31 @@ class KeyframeDataset60fps(Dataset):
 
 
 class BalancedDeterministicConditionSampler(Sampler):
-    def __init__(self, dataset, base_condition=1, seed=1):
+    def __init__(self, dataset, base_condition=1, seed=1, data_source_ratios=None):
         self.dataset = dataset
         self.base_condition = int(base_condition)
         self.seed = int(seed)
         self.epoch = 0
         self.target_counts = dataset.target_epoch_counts(base_condition=self.base_condition)
+        self.data_source_ratios = _normalize_source_ratios(
+            data_source_ratios,
+            getattr(dataset, "data_source_ratios", {"dfew": 0.8739, "express4d": 0.1261}),
+        )
+        self.target_source_counts = {
+            condition: _deterministic_quotas(target_count, self.data_source_ratios)
+            for condition, target_count in sorted(self.target_counts.items())
+        }
+        self.last_epoch_stats = None
 
         missing_conditions = sorted(set(dataset.condition_indices) - set(self.target_counts))
         if missing_conditions:
             raise ValueError(f"Missing target counts for conditions: {missing_conditions}")
+        for condition, source_targets in self.target_source_counts.items():
+            for source, target_count in source_targets.items():
+                if target_count > 0 and not dataset.condition_source_indices.get((condition, source)):
+                    raise ValueError(
+                        f"No samples for required condition={condition}, data_source={source}"
+                    )
 
     def __len__(self):
         return int(sum(self.target_counts.values()))
@@ -423,34 +716,104 @@ class BalancedDeterministicConditionSampler(Sampler):
 
     def _pick_without_replacement(self, indices, target_count, rng):
         if target_count <= 0:
-            return np.empty((0,), dtype=np.int64)
+            return np.empty((0,), dtype=np.int64), 0
         if len(indices) == 0:
-            raise ValueError("Cannot sample from an empty condition bucket")
+            raise ValueError("Cannot sample from an empty condition/data-source bucket")
 
         permuted = np.array(indices, dtype=np.int64)
         rng.shuffle(permuted)
         if target_count <= len(permuted):
-            return permuted[:target_count]
+            return permuted[:target_count], 0
 
         repeats = int(math.ceil(target_count / len(permuted)))
         tiled = np.tile(permuted, repeats)
-        return tiled[:target_count]
+        return tiled[:target_count], int(target_count - len(permuted))
+
+    def _build_epoch(self, epoch):
+        rng = np.random.default_rng(self.seed + int(epoch))
+        epoch_indices = []
+        repeat_counts = {}
+        for condition, source_targets in sorted(self.target_source_counts.items()):
+            repeat_counts[condition] = {}
+            for source, target_count in sorted(source_targets.items()):
+                indices = self.dataset.condition_source_indices.get((condition, source), [])
+                selected, repeated = self._pick_without_replacement(indices, target_count, rng)
+                epoch_indices.extend(selected.tolist())
+                repeat_counts[condition][source] = repeated
+
+        epoch_indices = np.asarray(epoch_indices, dtype=np.int64)
+        rng.shuffle(epoch_indices)
+        stats = self._summarize(epoch_indices, repeat_counts, epoch)
+        return epoch_indices.tolist(), stats
+
+    def _summarize(self, epoch_indices, repeat_counts, epoch):
+        condition_counts = Counter()
+        source_counts = {condition: Counter() for condition in self.target_counts}
+        mask_counts = Counter()
+        joint_counts = {}
+        for raw_index in epoch_indices:
+            index = int(raw_index)
+            condition, source, mode = self.dataset.sample_sampling_metadata(index)
+            condition_counts[condition] += 1
+            source_counts[condition][source] += 1
+            mask_counts[mode] += 1
+            joint_counts.setdefault(condition, {}).setdefault(source, Counter())[mode] += 1
+
+        actual_source_ratios = {}
+        for condition, counts in source_counts.items():
+            total = sum(counts.values())
+            actual_source_ratios[condition] = {
+                source: (float(counts[source]) / total if total else 0.0)
+                for source in sorted(self.data_source_ratios)
+            }
+        return {
+            "epoch": int(epoch),
+            "total_samples": int(len(epoch_indices)),
+            "target_condition_counts": {
+                int(key): int(value) for key, value in sorted(self.target_counts.items())
+            },
+            "target_condition_source_counts": {
+                int(condition): {source: int(count) for source, count in sorted(values.items())}
+                for condition, values in sorted(self.target_source_counts.items())
+            },
+            "actual_condition_counts": {
+                int(key): int(value) for key, value in sorted(condition_counts.items())
+            },
+            "actual_condition_source_counts": {
+                int(condition): {
+                    source: int(counts[source]) for source in sorted(self.data_source_ratios)
+                }
+                for condition, counts in sorted(source_counts.items())
+            },
+            "actual_condition_source_ratios": actual_source_ratios,
+            "mask_mode_counts": {mode: int(mask_counts[mode]) for mode in MASK_MODES},
+            "condition_source_mask_mode_counts": {
+                int(condition): {
+                    source: {
+                        mode: int(joint_counts.get(condition, {}).get(source, {}).get(mode, 0))
+                        for mode in MASK_MODES
+                    }
+                    for source in sorted(self.data_source_ratios)
+                }
+                for condition in sorted(self.target_counts)
+            },
+            "repeat_counts": {
+                int(condition): {source: int(count) for source, count in sorted(values.items())}
+                for condition, values in sorted(repeat_counts.items())
+            },
+            "total_repeats": int(
+                sum(sum(values.values()) for values in repeat_counts.values())
+            ),
+        }
+
+    def epoch_statistics(self, epoch=0):
+        _, stats = self._build_epoch(epoch)
+        return stats
 
     def __iter__(self):
-        rng = np.random.default_rng(self.seed + self.epoch)
-        epoch_indices = []
-        for condition, target_count in sorted(self.target_counts.items()):
-            indices = self.dataset.condition_indices.get(condition, [])
-            if condition == self.base_condition:
-                selected = self._pick_without_replacement(indices, len(indices), rng)
-            else:
-                selected = self._pick_without_replacement(indices, target_count, rng)
-            epoch_indices.extend(selected.tolist())
-
-        epoch_indices = np.array(epoch_indices, dtype=np.int64)
-        rng.shuffle(epoch_indices)
+        epoch_indices, self.last_epoch_stats = self._build_epoch(self.epoch)
         self.epoch += 1
-        return iter(epoch_indices.tolist())
+        return iter(epoch_indices)
 
 
 def get_dataloader(config, seed=1, batch_size=16, num_workers=0):
@@ -461,6 +824,7 @@ def get_dataloader(config, seed=1, batch_size=16, num_workers=0):
         train_dataset,
         base_condition=int(config["dataset"].get("balance_base_condition", 1)),
         seed=seed,
+        data_source_ratios=config["dataset"].get("data_source_ratios"),
     )
 
     train_loader = DataLoader(

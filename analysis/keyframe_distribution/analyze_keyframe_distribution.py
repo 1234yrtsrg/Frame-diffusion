@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import bisect
 import copy
 import csv
 import json
@@ -27,6 +26,8 @@ if str(CSDI_DIR) not in sys.path:
 
 from dataset_keyframe_dataset_60fps import (  # noqa: E402
     BalancedDeterministicConditionSampler,
+    _farthest_temporal_subset,
+    _uniform_positions_with_mandatory,
 )
 
 
@@ -192,11 +193,36 @@ class Aggregate:
 class SamplerDatasetView:
     """Minimal dataset interface required by the production sampler."""
 
-    def __init__(self, condition_indices: Mapping[int, List[int]], ratios: Mapping[int, float]):
+    def __init__(
+        self,
+        condition_indices: Mapping[int, List[int]],
+        ratios: Mapping[int, float],
+        source_by_sample,
+        condition_by_sample,
+        code_source,
+        data_source_ratios,
+    ):
         self.condition_indices = dict(condition_indices)
         self.condition_counts = Counter({key: len(value) for key, value in condition_indices.items()})
         ratio_total = float(sum(ratios.values()))
         self.condition_ratios = {int(key): float(value) / ratio_total for key, value in ratios.items()}
+        self.source_by_sample = source_by_sample
+        self.condition_by_sample = condition_by_sample
+        self.code_source = code_source
+        self.data_source_ratios = {
+            str(key).lower(): float(value) for key, value in data_source_ratios.items()
+        }
+        self.condition_source_indices = defaultdict(list)
+        for index, condition in enumerate(condition_by_sample):
+            source = str(code_source[source_by_sample[index]]).lower()
+            self.condition_source_indices[(int(condition), source)].append(index)
+
+    def sample_sampling_metadata(self, index):
+        return (
+            int(self.condition_by_sample[index]),
+            str(self.code_source[self.source_by_sample[index]]).lower(),
+            "none",
+        )
 
     def target_epoch_counts(self, base_condition: int = 1) -> dict:
         base_count = int(self.condition_counts[base_condition])
@@ -351,24 +377,17 @@ def exact_sample_positions(
     seq_len: int,
     num_frames: int,
 ) -> Tuple[np.ndarray, int, int]:
-    interval = float(end_idx - start_idx) / float(seq_len - 1)
-    base = np.rint(start_idx + np.arange(seq_len, dtype=np.float32) * interval).astype(np.int64)
-    base[0] = start_idx
-    base[-1] = end_idx
-    positions = base.copy()
-    left = bisect.bisect_right(keyframes, start_idx)
-    right = bisect.bisect_left(keyframes, end_idx)
-    internal = keyframes[left:right]
-    available = set(range(1, seq_len - 1))
-    sampled_internal = 0
-    for keyframe in internal:
-        if not available:
-            break
-        slot = min(available, key=lambda candidate: (abs(int(base[candidate]) - keyframe), candidate))
-        positions[slot] = keyframe
-        available.remove(slot)
-        sampled_internal += 1
-    return np.clip(positions, 0, num_frames - 1), len(internal), sampled_internal
+    internal = sorted(set(int(value) for value in keyframes if start_idx < int(value) < end_idx))
+    capacity = seq_len - 2
+    retained = internal if len(internal) <= capacity else sorted(
+        _farthest_temporal_subset(internal, (start_idx, end_idx), capacity)
+    )
+    positions = _uniform_positions_with_mandatory(
+        start_idx, end_idx, seq_len, {start_idx, end_idx, *retained}
+    )
+    assert len(positions) == seq_len and np.all(np.diff(positions) > 0)
+    assert 0 <= positions[0] and positions[-1] < num_frames
+    return positions, len(internal), len(retained)
 
 
 def classify(original_internal: int, sampled_internal: int) -> str:
@@ -439,11 +458,19 @@ def analyze(config: dict, selected_sources: List[Tuple[str, List[Path]]], seed: 
                 condition_indices[condition].append(sample_index)
                 sample_index += 1
 
-    sampler_view = SamplerDatasetView(condition_indices, condition_ratios)
+    sampler_view = SamplerDatasetView(
+        condition_indices,
+        condition_ratios,
+        source_by_sample,
+        condition_by_sample,
+        code_source,
+        dataset_config.get("data_source_ratios", {"dfew": 0.8739, "express4d": 0.1261}),
+    )
     sampler = BalancedDeterministicConditionSampler(
         sampler_view,
         base_condition=int(dataset_config.get("balance_base_condition", 1)),
         seed=seed,
+        data_source_ratios=dataset_config.get("data_source_ratios"),
     )
     epoch_indices = list(iter(sampler))
     epoch_condition = Counter()
@@ -506,17 +533,18 @@ def analyze(config: dict, selected_sources: List[Tuple[str, List[Path]]], seed: 
             "sampler_epoch_data_source_distribution": sampler_source_distribution,
             "sampler_minus_original_percentage_points": source_percentage_change,
             "condition_balanced": True,
-            "data_source_explicitly_balanced": False,
+            "data_source_explicitly_balanced": True,
             "interpretation": (
-                "The sampler enforces configured condition ratios, but samples each condition bucket "
-                "without a source quota; source proportions are therefore inherited from available windows."
+                "The sampler enforces condition ratios and the configured DFEW/Express4D source quota "
+                "inside every condition bucket."
             ),
-            "recommended_data_source_sampling_ratio": {
-                source: round(1.0 / len(source_names), 6) for source in source_names
+            "configured_data_source_sampling_ratio": {
+                source: float(dataset_config.get("data_source_ratios", {}).get(source.lower(), 0.0))
+                for source in source_names
             },
             "recommendation": (
-                "Use hierarchical sampling: first apply condition_ratios, then sample data sources "
-                "with an explicit 1:1 quota inside every condition bucket."
+                "Keep hierarchical condition/source sampling; deterministic repetition covers any "
+                "condition/source bucket that is smaller than its quota."
             ),
         },
     }

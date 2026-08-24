@@ -182,8 +182,8 @@ class CSDI_Express4D(CSDI_base):
     """CSDI variant for 12-frame Express4D blendshape interpolation.
 
     The batch keeps complete ground-truth values in observed_data, while
-    observed_mask marks only the two endpoint conditions and gt_mask marks the
-    ten middle target frames.
+    observed_mask marks endpoints plus any visible internal keyframes, and
+    gt_mask marks every hidden target value.
     """
 
     def __init__(self, config, device, target_dim=52):
@@ -229,10 +229,12 @@ class CSDI_Express4D(CSDI_base):
         observed_data,
         cond_mask,
         target_mask,
+        observed_tp,
         side_info,
         side_condition,
         is_train,
         set_t=-1,
+        return_loss_components=False,
     ):
         B, K, L = observed_data.shape
         if is_train != 1:
@@ -250,7 +252,7 @@ class CSDI_Express4D(CSDI_base):
         predicted_noise = self.diffmodel(total_input, side_info, t)
 
         num_target = target_mask.sum()
-        denom = num_target if num_target > 0 else 1
+        denom = num_target.clamp_min(1.0)
         residual = (noise - predicted_noise) * target_mask
         diffusion_loss = (residual ** 2).sum() / denom
 
@@ -260,13 +262,9 @@ class CSDI_Express4D(CSDI_base):
 
         recon_loss = torch.abs((x0_pred - gt_full) * target_mask).sum() / denom
 
-        pred_velocity = pred_full[:, :, 1:] - pred_full[:, :, :-1]
-        gt_velocity = gt_full[:, :, 1:] - gt_full[:, :, :-1]
-        vel_loss = torch.mean(torch.abs(pred_velocity - gt_velocity))
-
-        pred_acc = pred_full[:, :, 2:] - 2 * pred_full[:, :, 1:-1] + pred_full[:, :, :-2]
-        gt_acc = gt_full[:, :, 2:] - 2 * gt_full[:, :, 1:-1] + gt_full[:, :, :-2]
-        acc_loss = torch.mean(torch.abs(pred_acc - gt_acc))
+        vel_loss, acc_loss = self.motion_losses(
+            pred_full, gt_full, target_mask, observed_tp
+        )
 
         range_low = torch.relu(self.clamp_min - x0_pred) ** 2
         range_high = torch.relu(x0_pred - self.clamp_max) ** 2
@@ -279,9 +277,71 @@ class CSDI_Express4D(CSDI_base):
             + self.lambda_acc * acc_loss
             + self.lambda_range * range_loss
         )
+        if return_loss_components:
+            legacy_vel, legacy_acc = self.legacy_motion_losses(pred_full, gt_full, target_mask)
+            return total_loss, {
+                "diffusion": diffusion_loss,
+                "recon": recon_loss,
+                "velocity": vel_loss,
+                "acceleration": acc_loss,
+                "range": range_loss,
+                "legacy_velocity": legacy_vel,
+                "legacy_acceleration": legacy_acc,
+            }
         return total_loss
 
-    def forward(self, batch, is_train=1):
+    @staticmethod
+    def _masked_mean(values, valid_mask):
+        valid_mask = valid_mask.to(dtype=values.dtype)
+        count = valid_mask.sum()
+        return (values * valid_mask).sum() / count.clamp_min(1.0)
+
+    @classmethod
+    def motion_losses(cls, pred_full, gt_full, target_mask, timepoints):
+        """L1 velocity/acceleration errors on target-touching irregular intervals."""
+        if pred_full.shape != gt_full.shape or pred_full.shape != target_mask.shape:
+            raise ValueError("pred_full, gt_full, and target_mask must have identical [B,K,L] shapes")
+        if timepoints.ndim != 2 or timepoints.shape != (pred_full.shape[0], pred_full.shape[2]):
+            raise ValueError("timepoints must have shape [B,L]")
+        dt = timepoints[:, 1:] - timepoints[:, :-1]
+        if torch.any(dt <= 0):
+            raise ValueError("timepoints must be strictly increasing for every sample")
+
+        dt_expanded = dt.unsqueeze(1)
+        pred_velocity = (pred_full[:, :, 1:] - pred_full[:, :, :-1]) / dt_expanded
+        gt_velocity = (gt_full[:, :, 1:] - gt_full[:, :, :-1]) / dt_expanded
+        velocity_valid = torch.maximum(target_mask[:, :, 1:], target_mask[:, :, :-1])
+        velocity_loss = cls._masked_mean(
+            torch.abs(pred_velocity - gt_velocity), velocity_valid
+        )
+
+        pred_acceleration = 2.0 * (pred_velocity[:, :, 1:] - pred_velocity[:, :, :-1]) / (
+            dt_expanded[:, :, 1:] + dt_expanded[:, :, :-1]
+        )
+        gt_acceleration = 2.0 * (gt_velocity[:, :, 1:] - gt_velocity[:, :, :-1]) / (
+            dt_expanded[:, :, 1:] + dt_expanded[:, :, :-1]
+        )
+        acceleration_valid = torch.maximum(
+            torch.maximum(target_mask[:, :, :-2], target_mask[:, :, 1:-1]),
+            target_mask[:, :, 2:],
+        )
+        acceleration_loss = cls._masked_mean(
+            torch.abs(pred_acceleration - gt_acceleration), acceleration_valid
+        )
+        return velocity_loss, acceleration_loss
+
+    @classmethod
+    def legacy_motion_losses(cls, pred_full, gt_full, target_mask):
+        """Exact previous unit-step/all-position losses, retained only for scale reports."""
+        pred_velocity = pred_full[:, :, 1:] - pred_full[:, :, :-1]
+        gt_velocity = gt_full[:, :, 1:] - gt_full[:, :, :-1]
+        velocity_loss = torch.mean(torch.abs(pred_velocity - gt_velocity))
+        pred_acc = pred_full[:, :, 2:] - 2 * pred_full[:, :, 1:-1] + pred_full[:, :, :-2]
+        gt_acc = gt_full[:, :, 2:] - 2 * gt_full[:, :, 1:-1] + gt_full[:, :, :-2]
+        acceleration_loss = torch.mean(torch.abs(pred_acc - gt_acc))
+        return velocity_loss, acceleration_loss
+
+    def forward(self, batch, is_train=1, return_loss_components=False):
         observed_data, cond_mask, observed_tp, target_mask, side_condition = self.process_data(batch)
         side_info = self.get_side_info(
             observed_tp,
@@ -292,21 +352,37 @@ class CSDI_Express4D(CSDI_base):
 
         if is_train == 1:
             return self._calc_loss_at_t(
-                observed_data, cond_mask, target_mask, side_info, side_condition, is_train
-            )
-
-        loss_sum = 0
-        for t in range(self.num_steps):
-            loss_sum += self._calc_loss_at_t(
                 observed_data,
                 cond_mask,
                 target_mask,
+                observed_tp,
                 side_info,
                 side_condition,
                 is_train,
-                set_t=t,
-            ).detach()
-        return loss_sum / self.num_steps
+                return_loss_components=return_loss_components,
+            )
+
+        loss_sum = 0
+        component_sums = None
+        for t in range(self.num_steps):
+            result = self._calc_loss_at_t(
+                observed_data, cond_mask, target_mask, observed_tp, side_info, side_condition,
+                is_train, set_t=t, return_loss_components=return_loss_components,
+            )
+            if return_loss_components:
+                loss_at_t, components = result
+                component_sums = components if component_sums is None else {
+                    key: component_sums[key] + value for key, value in components.items()
+                }
+            else:
+                loss_at_t = result
+            loss_sum += loss_at_t.detach()
+        average_loss = loss_sum / self.num_steps
+        if return_loss_components:
+            return average_loss, {
+                key: value.detach() / self.num_steps for key, value in component_sums.items()
+            }
+        return average_loss
 
     def evaluate(self, batch, n_samples):
         observed_data, cond_mask, observed_tp, target_mask, side_condition = self.process_data(batch)
@@ -320,7 +396,15 @@ class CSDI_Express4D(CSDI_base):
             samples = self.impute(observed_data, cond_mask, side_info, n_samples)
         return samples, observed_data, target_mask, cond_mask, observed_tp
 
-    def generate_middle(self, start, end, duration, num_samples=1, condition=None):
+    def generate_middle(
+        self,
+        start,
+        end,
+        duration,
+        num_samples=1,
+        condition=None,
+        timepoints=None,
+    ):
         device = self.get_device()
         was_single = start.dim() == 1
         if was_single:
@@ -360,7 +444,19 @@ class CSDI_Express4D(CSDI_base):
         cond_mask = torch.zeros_like(observed_data)
         cond_mask[:, :, 0] = 1.0
         cond_mask[:, :, -1] = 1.0
-        observed_tp = torch.arange(self.seq_len, device=device).float().unsqueeze(0).expand(B, -1)
+        if timepoints is None:
+            observed_tp = torch.arange(self.seq_len, device=device).float().unsqueeze(0).expand(B, -1)
+        else:
+            observed_tp = torch.as_tensor(timepoints, device=device).float()
+            if observed_tp.dim() == 1:
+                observed_tp = observed_tp.unsqueeze(0).expand(B, -1)
+            if observed_tp.shape != (B, self.seq_len):
+                raise ValueError(
+                    f"timepoints must have shape [{self.seq_len}] or [B,{self.seq_len}], "
+                    f"got {tuple(observed_tp.shape)}"
+                )
+            if torch.any(observed_tp[:, 1:] <= observed_tp[:, :-1]):
+                raise ValueError("timepoints must be strictly increasing")
 
         with torch.no_grad():
             side_info = self.get_side_info(

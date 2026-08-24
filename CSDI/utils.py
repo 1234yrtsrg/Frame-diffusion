@@ -61,6 +61,9 @@ def train(
             break
         avg_loss = 0
         model.train()
+        sampler = getattr(train_loader, "sampler", None)
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch_no)
         with tqdm(train_loader, mininterval=5.0, maxinterval=50.0) as it:
             for batch_no, train_batch in enumerate(it, start=1):
                 optimizer.zero_grad()

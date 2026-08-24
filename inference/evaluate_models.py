@@ -475,7 +475,7 @@ def progress_print(args, message):
         print(f"[shard {args.shard_index + 1}/{args.num_shards}] {message}", flush=True)
 
 
-def generated_middle(model, start, end, duration, condition, num_samples):
+def generated_middle(model, start, end, duration, condition, num_samples, timepoints=None):
     if model.use_condition:
         output = model.generate_middle(
             start,
@@ -483,6 +483,7 @@ def generated_middle(model, start, end, duration, condition, num_samples):
             None,
             num_samples=num_samples,
             condition=condition,
+            timepoints=timepoints,
         )
     else:
         output = model.generate_middle(
@@ -490,6 +491,7 @@ def generated_middle(model, start, end, duration, condition, num_samples):
             end,
             duration,
             num_samples=num_samples,
+            timepoints=timepoints,
         )
     if output.dim() == 4:
         return output.mean(dim=1)
@@ -525,6 +527,9 @@ def two_stage_predict(
         float(coarse_condition),
         device=device,
     )
+    coarse_timepoints = 11.0 * (
+        coarse_positions - coarse_positions[:, :1]
+    ) / (coarse_positions[:, -1:] - coarse_positions[:, :1])
     coarse_middle = generated_middle(
         model,
         start,
@@ -532,6 +537,7 @@ def two_stage_predict(
         duration=coarse_duration,
         condition=coarse_condition_tensor,
         num_samples=num_samples,
+        timepoints=coarse_timepoints.to(device),
     )
     coarse_pred = torch.cat([start[:, None], coarse_middle, end[:, None]], dim=1)
 

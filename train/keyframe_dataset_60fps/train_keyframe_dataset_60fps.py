@@ -119,6 +119,31 @@ def load_training_checkpoint(model, checkpoint_path, fallback_global_step=0):
     return resume_state
 
 
+def collect_forward_loss_stats(model, loader, max_batches, seed):
+    """Collect unweighted loss terms without optimizer steps or parameter updates."""
+    torch.manual_seed(int(seed))
+    model.eval()
+    totals = {}
+    total_items = 0
+    with torch.no_grad():
+        for batch_index, batch in enumerate(loader):
+            if batch_index >= int(max_batches):
+                break
+            _, components = model(batch, is_train=1, return_loss_components=True)
+            batch_items = int(batch["observed_data"].shape[0])
+            total_items += batch_items
+            for name, value in components.items():
+                totals[name] = totals.get(name, 0.0) + float(value.detach().mean().cpu()) * batch_items
+    if total_items == 0:
+        raise ValueError("No batches were available for loss-scale statistics")
+    return {
+        "seed": int(seed),
+        "num_batches": min(int(max_batches), batch_index + 1),
+        "num_samples": total_items,
+        "unweighted_losses": {name: value / total_items for name, value in sorted(totals.items())},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train CSDI on keyframe_dataset_60fps")
     parser.add_argument("--config", type=str, default="CSDI/config/keyframe_dataset_60fps.yaml")
@@ -142,6 +167,17 @@ def main():
         help="Comma-separated subdirectories under dataset_root, default: dfew,express4d",
     )
     parser.add_argument("--data_parallel", action="store_true")
+    parser.add_argument(
+        "--loss_stats_batches",
+        type=int,
+        default=0,
+        help="Run this many deterministic forward-only batches and save raw loss scales before training.",
+    )
+    parser.add_argument(
+        "--loss_stats_only",
+        action="store_true",
+        help="Exit after forward-only loss statistics; defaults to 4 batches if no count is given.",
+    )
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -189,10 +225,16 @@ def main():
     )
     train_dataset = train_loader.dataset
     print("train dataset counts:", dict(sorted(train_dataset.dataset_counts.items())))
+    print("train data source sequence counts:", dict(sorted(train_dataset.data_source_counts.items())))
     print("train condition counts:", dict(sorted(train_dataset.condition_counts.items())))
     print("target condition ratios:", dict(sorted(train_dataset.condition_ratios.items())))
     print("epoch target counts:", dict(sorted(train_loader.sampler.target_counts.items())))
     print("samples per epoch:", len(train_loader.sampler))
+    sampling_stats = train_loader.sampler.epoch_statistics(epoch=0)
+    print("epoch 0 condition/source/mask sampling stats:")
+    print(json.dumps(sampling_stats, indent=2))
+    with open(foldername / "sampling_stats_epoch_0.json", "w", encoding="utf-8") as f:
+        json.dump(sampling_stats, f, indent=2)
 
     model = CSDI_Express4D(
         config,
@@ -217,6 +259,25 @@ def main():
         print(f"Resuming from {checkpoint_path} at global_step {resume_state['global_step']}")
     elif args.modelfolder:
         print(f"No checkpoint found in {foldername}; starting from scratch")
+
+    stats_batches = int(args.loss_stats_batches)
+    if args.loss_stats_only and stats_batches <= 0:
+        stats_batches = 4
+    if stats_batches < 0:
+        raise ValueError("--loss_stats_batches must be non-negative")
+    if stats_batches > 0:
+        loss_stats = collect_forward_loss_stats(model, train_loader, stats_batches, args.seed)
+        loss_stats["configured_weights"] = {
+            "lambda_vel": float(config["loss"]["lambda_vel"]),
+            "lambda_acc": float(config["loss"]["lambda_acc"]),
+        }
+        print("forward-only loss scale stats:")
+        print(json.dumps(loss_stats, indent=2))
+        with open(foldername / "forward_loss_stats.json", "w", encoding="utf-8") as f:
+            json.dump(loss_stats, f, indent=2)
+    if args.loss_stats_only:
+        print("Forward-only loss-scale check complete; formal training was not started.")
+        return
 
     if args.data_parallel:
         if not torch.cuda.is_available():

@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CSDI_DIR = REPO_ROOT / "CSDI"
 sys.path.insert(0, str(CSDI_DIR))
 
-from dataset_keyframe_dataset_60fps import get_dataloader
+from dataset_express4d_condition import get_dataloader
 from main_model import CSDI_Express4D
 from utils import train
 
